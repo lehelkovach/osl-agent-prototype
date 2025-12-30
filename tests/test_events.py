@@ -32,6 +32,17 @@ class TestAgentEvents(unittest.TestCase):
                 "notes": "Event bus coverage",
                 "links": []
               }
+            },
+            {
+              "tool": "calendar.create_event",
+              "params": {
+                "title": "Event Bus Meeting",
+                "start": "2025-01-01T10:00:00Z",
+                "end": "2025-01-01T11:00:00Z",
+                "attendees": [],
+                "location": "Virtual",
+                "notes": "Event bus calendar create"
+              }
             }
           ]
         }
@@ -65,6 +76,11 @@ class TestAgentEvents(unittest.TestCase):
         self.assertIn("plan_ready", event_types)
         self.assertIn("execution_completed", event_types)
         self.assertIn("message_logged", event_types)
+        self.assertIn("tool_invoked", event_types)
+        self.assertIn("memory_upsert", event_types)
+        self.assertIn("rag_query", event_types)
+        self.assertIn("queue_updated", event_types)
+        self.assertIn("calendar_event_created", event_types)
 
         # History captured with embeddings
         history = [n for n in memory.nodes.values() if n.kind == "Message"]
@@ -76,6 +92,25 @@ class TestAgentEvents(unittest.TestCase):
         plan_event = next(e for e in events if e.type == "plan_ready")
         self.assertIn("raw_llm", plan_event.payload)
         self.assertIn("event test", plan_event.payload["raw_llm"])
+
+        # Tool invocation payload contains tool and params
+        tool_event = next(e for e in events if e.type == "tool_invoked")
+        self.assertEqual(tool_event.payload["tool"], "tasks.create")
+        self.assertIn("params", tool_event.payload)
+
+        # Memory upsert happened for task node
+        mem_event = next(e for e in events if e.type == "memory_upsert")
+        self.assertEqual(mem_event.payload["kind"], "Task")
+
+        # RAG query event captured
+        rag_event = next(e for e in events if e.type == "rag_query")
+        self.assertEqual(rag_event.payload["query"], "remind me to cover events")
+
+        # Queue and calendar events captured
+        queue_event = next(e for e in events if e.type == "queue_updated")
+        self.assertIn("items", queue_event.payload)
+        cal_event = next(e for e in events if e.type == "calendar_event_created")
+        self.assertEqual(cal_event.payload["event"]["title"], "Event Bus Meeting")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,16 @@ class PersonalAssistantAgent:
         memory_results = self.memory.search(
             user_request, top_k=5, query_embedding=query_embedding
         )
+        self._emit(
+            "rag_query",
+            {
+                "query": user_request,
+                "top_k": 5,
+                "has_embedding": query_embedding is not None,
+                "results_count": len(memory_results),
+                "trace_id": provenance.trace_id,
+            },
+        )
         tasks_context = self.tasks.list() if self.tasks else []
         calendar_context = (
             self.calendar.list({"start": "1970-01-01", "end": "2100-01-01"})
@@ -160,7 +170,16 @@ class PersonalAssistantAgent:
                     task_node = self._task_to_node(res["task"])
                     task_node.llm_embedding = self._embed_text(task_node.props.get("title", ""))
                     self.memory.upsert(task_node, provenance, embedding_request=True)
-                    self.queue_manager.enqueue(task_node, provenance)
+                    self._emit_memory_upsert(task_node, provenance)
+                    queue = self.queue_manager.enqueue(task_node, provenance)
+                    self._emit(
+                        "queue_updated",
+                        {
+                            "trace_id": provenance.trace_id,
+                            "task_uuid": task_node.uuid,
+                            "items": queue.props.get("items", []),
+                        },
+                    )
                 results.append(res)
             elif tool_name == "calendar.create_event":
                 res = self.calendar.create_event(**params)
@@ -172,6 +191,14 @@ class PersonalAssistantAgent:
                     )
                     event_node.llm_embedding = self._embed_text(res["event"]["title"])
                     self.memory.upsert(event_node, provenance, embedding_request=True)
+                    self._emit_memory_upsert(event_node, provenance)
+                    self._emit(
+                        "calendar_event_created",
+                        {
+                            "trace_id": provenance.trace_id,
+                            "event": res["event"],
+                        },
+                    )
                 results.append(res)
             elif tool_name == "contacts.create" and self.contacts:
                 res = self.contacts.create(**params)
@@ -191,6 +218,7 @@ class PersonalAssistantAgent:
                         )
                     )
                     self.memory.upsert(contact_node, provenance, embedding_request=True)
+                    self._emit_memory_upsert(contact_node, provenance)
                 results.append(res)
             elif tool_name == "web.get" and self.web:
                 res = self.web.get(**params)
@@ -221,6 +249,16 @@ class PersonalAssistantAgent:
                 results.append(res)
             else:
                 results.append({"status": "no action taken", "tool": tool_name})
+            # Emit tool invocation event with params and result
+            self._emit(
+                "tool_invoked",
+                {
+                    "tool": tool_name,
+                    "params": params,
+                    "result": results[-1] if results else {"status": "no action taken"},
+                    "trace_id": provenance.trace_id,
+                },
+            )
         if not results:
             return {"status": "no action taken"}
         return {"status": "completed", "steps": results}
@@ -293,3 +331,14 @@ class PersonalAssistantAgent:
         except RuntimeError:
             # No running loop
             asyncio.run(self.event_bus.emit(event_type, payload))
+
+    def _emit_memory_upsert(self, item: Node, provenance: Provenance) -> None:
+        self._emit(
+            "memory_upsert",
+            {
+                "uuid": item.uuid,
+                "kind": item.kind,
+                "labels": item.labels,
+                "trace_id": provenance.trace_id,
+            },
+        )
