@@ -62,5 +62,48 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertEqual(result['plan']['intent'], 'task')
         self.assertEqual(result['execution_results']['status'], 'completed')
 
+    def test_openai_json_plan_parsed_and_used(self):
+        """Ensure a valid JSON response from OpenAI is parsed and executed (no fallback)."""
+        memory = MockMemoryTools()
+        calendar = MockCalendarTools()
+        tasks = MockTaskTools()
+        web = MockWebTools()
+        fake_plan = """
+        {
+          "intent": "task",
+          "steps": [
+            {
+              "tool": "tasks.create",
+              "params": {
+                "title": "parse plan success",
+                "due": null,
+                "priority": 2,
+                "notes": "LLM provided JSON plan",
+                "links": []
+              }
+            }
+          ]
+        }
+        """
+        openai_client = FakeOpenAIClient(chat_response=fake_plan, embedding=[0.2, 0.3, 0.5])
+        agent = PersonalAssistantAgent(
+            memory,
+            calendar,
+            tasks,
+            web=web,
+            contacts=MockContactsTools(),
+            openai_client=openai_client,
+        )
+
+        result = agent.execute_request("remind me to parse plan success")
+
+        self.assertFalse(result["plan"].get("fallback"))
+        self.assertEqual(result["execution_results"]["status"], "completed")
+        self.assertEqual(len(tasks.tasks), 1)
+        self.assertEqual(tasks.tasks[0]["title"], "parse plan success")
+        task_nodes = [n for n in memory.nodes.values() if n.kind == "Task"]
+        self.assertEqual(len(task_nodes), 1)
+        self.assertEqual(task_nodes[0].llm_embedding, [0.2, 0.3, 0.5])
+
 if __name__ == '__main__':
     unittest.main()
