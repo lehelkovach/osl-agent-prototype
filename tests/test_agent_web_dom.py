@@ -41,6 +41,7 @@ class TestAgentWebDom(unittest.TestCase):
           "intent": "web_io",
           "steps": [
             {"tool": "web.get_dom", "params": {"url": "https://example.com"}},
+            {"tool": "web.locate_bounding_box", "params": {"url": "https://example.com", "query": "password input"}},
             {"tool": "web.click_xpath", "params": {"url": "https://example.com", "xpath": "//button[@id='ok']"}}
           ]
         }
@@ -60,9 +61,10 @@ class TestAgentWebDom(unittest.TestCase):
         # Plan executed with web steps
         self.assertEqual(result["plan"]["intent"], "web_io")
         self.assertEqual(result["execution_results"]["status"], "completed")
-        self.assertEqual(len(web.history), 2)
+        self.assertEqual(len(web.history), 3)
         self.assertEqual(web.history[0]["method"], "GET_DOM")
-        self.assertEqual(web.history[1]["method"], "CLICK_XPATH")
+        self.assertEqual(web.history[1]["method"], "LOCATE_BBOX")
+        self.assertEqual(web.history[2]["method"], "CLICK_XPATH")
 
         # RAG context was passed into the prompt
         self.assertIsNotNone(openai_client.last_messages)

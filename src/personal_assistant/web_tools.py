@@ -75,6 +75,12 @@ class PlaywrightWebTools(WebTools):
 
         return self._with_page(url, action)
 
+    def locate_bounding_box(self, url: str, query: str) -> Dict[str, Any]:
+        """
+        Placeholder: requires a vision model to locate elements by description.
+        """
+        raise NotImplementedError("locate_bounding_box requires a vision-enabled implementation.")
+
     def click_xy(self, url: str, x: int, y: int) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)

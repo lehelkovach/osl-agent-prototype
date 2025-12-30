@@ -232,6 +232,9 @@ class PersonalAssistantAgent:
             elif tool_name == "web.get_dom" and self.web:
                 res = self.web.get_dom(**params)
                 results.append(res)
+            elif tool_name == "web.locate_bounding_box" and self.web:
+                res = self.web.locate_bounding_box(**params)
+                results.append(res)
             elif tool_name == "web.click_selector" and self.web:
                 res = self.web.click_selector(**params)
                 results.append(res)

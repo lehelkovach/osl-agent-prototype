@@ -21,7 +21,7 @@ Memory contract:
 - Write only on success/user approval: `memory.upsert(item, provenance, embedding_request?)`.
 - Object shapes: Node {uuid, kind, labels, props, llm_embedding?, status}; Edge {uuid, kind:"edge", from_node, to_node, rel, props}; Provenance {source:"user|tool|doc", ts, confidence, trace_id}.
 
-Tool catalog (choose minimal set):
+ Tool catalog (choose minimal set):
 - tasks.create(title, due?, priority, notes, links[])
 - tasks.list(filters?)
 - contacts.create(name, emails[], phones[], org?, notes, tags[])
@@ -30,6 +30,7 @@ Tool catalog (choose minimal set):
 - calendar.create_event(title, start, end, attendees[], location, notes)
 - memory.search(...) / memory.upsert(...)
 - web.get(url), web.post(url, payload), web.screenshot(url), web.get_dom(url)  # primitive commandlets for HTTP/DOM/screenshot
+- web.locate_bounding_box(url, query)  # vision-assisted lookup of element bounding boxes
 - web.click_selector(url, selector) / web.click_xpath(url, xpath) / web.click_xy(url, x, y)
 - queue.update(items[])  # reorder/prioritize task queue items (uuid, priority, due, status)
 

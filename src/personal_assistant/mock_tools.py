@@ -165,6 +165,17 @@ class MockWebTools(WebTools):
         print(f"Mock GET_DOM: {url}")
         return response
 
+    def locate_bounding_box(self, url: str, query: str) -> Dict[str, Any]:
+        response = {
+            "status": 200,
+            "url": url,
+            "query": query,
+            "bbox": {"x": 10, "y": 20, "width": 100, "height": 20},
+        }
+        self.history.append({"method": "LOCATE_BBOX", "url": url, "query": query, "response": response})
+        print(f"Mock LOCATE_BBOX: {url} {query}")
+        return response
+
     def click_xy(self, url: str, x: int, y: int) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "action": "click_xy", "x": x, "y": y}
         self.history.append({"method": "CLICK_XY", "url": url, "x": x, "y": y, "response": response})

@@ -86,6 +86,11 @@ class WebTools(ABC):
         pass
 
     @abstractmethod
+    def locate_bounding_box(self, url: str, query: str) -> Dict[str, Any]:
+        """Return bounding box {x,y,width,height} for an element described by query (vision-assisted)."""
+        pass
+
+    @abstractmethod
     def click_xy(self, url: str, x: int, y: int) -> Dict[str, Any]:
         """Click at coordinates on the page."""
         pass
