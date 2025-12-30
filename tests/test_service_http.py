@@ -66,6 +66,13 @@ class TestAgentHTTPService(unittest.TestCase):
         tool_event = next(e for e in events if e["type"] == "tool_invoked")
         self.assertEqual(tool_event["payload"]["tool"], "tasks.create")
 
+        # History/logs endpoints
+        res_hist = client.get("/history")
+        res_logs = client.get("/logs")
+        self.assertEqual(res_hist.status_code, 200)
+        self.assertGreaterEqual(len(res_hist.json()), 2)
+        self.assertEqual(res_logs.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

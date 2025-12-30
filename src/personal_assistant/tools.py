@@ -114,3 +114,12 @@ class WebTools(ABC):
     def wait_for(self, url: str, selector: str, timeout_ms: int = 5000) -> Dict[str, Any]:
         """Wait for selector to appear."""
         pass
+
+
+class ShellTools(ABC):
+    """Interface for running shell commands (in sandbox or dry-run)."""
+
+    @abstractmethod
+    def run(self, command: str, dry_run: bool = True) -> Dict[str, Any]:
+        """Run a shell command; dry_run for staging."""
+        pass

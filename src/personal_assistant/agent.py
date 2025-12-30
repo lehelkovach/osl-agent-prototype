@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 from src.personal_assistant.prompts import SYSTEM_PROMPT, DEVELOPER_PROMPT
-from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools
+from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ShellTools
 from src.personal_assistant.models import Node, Provenance
 from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
 from src.personal_assistant.task_queue import TaskQueueManager
@@ -20,6 +20,7 @@ class PersonalAssistantAgent:
         tasks: TaskTools,
         web: Optional[WebTools] = None,
         contacts: Optional["ContactsTools"] = None,
+        shell: Optional[ShellTools] = None,
         openai_client: Optional[OpenAIClient] = None,
         event_bus: Optional[EventBus] = None,
     ):
@@ -28,6 +29,7 @@ class PersonalAssistantAgent:
         self.tasks = tasks
         self.web = web
         self.contacts = contacts
+        self.shell = shell
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
         self.openai_client: OpenAIClient = openai_client or OpenAIClient()
@@ -249,6 +251,9 @@ class PersonalAssistantAgent:
                 results.append(res)
             elif tool_name == "web.wait_for" and self.web:
                 res = self.web.wait_for(**params)
+                results.append(res)
+            elif tool_name == "shell.run" and self.shell:
+                res = self.shell.run(**params)
                 results.append(res)
             elif tool_name == "queue.update":
                 queue = self.queue_manager.update_items(params.get("items", []), provenance)

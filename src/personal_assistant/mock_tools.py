@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Union, Optional
 import math
 import base64
 from src.personal_assistant.models import Node, Edge, Provenance
-from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ContactsTools
+from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ContactsTools, ShellTools
 
 class MockMemoryTools(MemoryTools):
     """A mock implementation of MemoryTools that stores data in-memory."""
@@ -126,6 +126,18 @@ class MockContactsTools(ContactsTools):
         self.contacts.append(contact)
         print(f"Created contact: {name}")
         return {"status": "success", "contact": contact}
+
+
+class MockShellTools(ShellTools):
+    """A mock shell runner that stages commands and can simulate execution."""
+    def __init__(self):
+        self.history: List[Dict[str, Any]] = []
+
+    def run(self, command: str, dry_run: bool = True) -> Dict[str, Any]:
+        res = {"status": "staged" if dry_run else "executed", "command": command, "dry_run": dry_run}
+        self.history.append(res)
+        print(f"Mock SHELL: {'DRY_RUN' if dry_run else 'RUN'} {command}")
+        return res
 
 
 class MockWebTools(WebTools):

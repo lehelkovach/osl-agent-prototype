@@ -15,9 +15,14 @@ chromadb = ">=0.5.5"
 python-arango = ">=8.2.5"
 fastapi = ">=0.114.0"
 uvicorn = {version = ">=0.30.0", extras = ["standard"]}
+structlog = ">=24.4.0"
+python-json-logger = ">=2.0.7"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.3.0"
+
+[tool.poetry.scripts]
+agent-service = "src.personal_assistant.service:main"
 
 [build-system]
 requires = ["poetry-core"]

@@ -33,6 +33,7 @@ Memory contract:
 - web.locate_bounding_box(url, query)  # vision-assisted lookup of element bounding boxes
 - web.click_selector(url, selector) / web.click_xpath(url, xpath) / web.click_xy(url, x, y)
 - queue.update(items[])  # reorder/prioritize task queue items (uuid, priority, due, status)
+- shell.run(command, dry_run?)  # stage shell commands; dry_run true before execution unless user-approved
 
  Web inspection policy:
 - Use web.get_dom(url) when you need DOM HTML and a screenshot for vision-based reasoning, then follow up with web.click_* or web.fill actions as needed.
