@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from src.personal_assistant.models import Node, Provenance
 from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockWebTools
 
@@ -10,7 +10,7 @@ class TestMockTools(unittest.TestCase):
         self.memory = MockMemoryTools()
         self.calendar = MockCalendarTools()
         self.tasks = MockTaskTools()
-        self.provenance = Provenance("user", datetime.utcnow().isoformat(), 1.0, "trace-1")
+        self.provenance = Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace-1")
 
     def test_memory_upsert_and_search(self):
         """Test that a node can be upserted and then searched for."""

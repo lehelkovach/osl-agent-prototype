@@ -1,6 +1,6 @@
 import json
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.personal_assistant.prompts import SYSTEM_PROMPT, DEVELOPER_PROMPT
 from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools
@@ -36,7 +36,7 @@ class PersonalAssistantAgent:
         """
         provenance = Provenance(
             source="user",
-            ts=datetime.utcnow().isoformat(),
+            ts=datetime.now(timezone.utc).isoformat(),
             confidence=1.0,
             trace_id="agent-trace-1",
         )

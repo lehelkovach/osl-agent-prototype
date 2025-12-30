@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.personal_assistant.knowledge import KnowledgeGraphInterface
 from src.personal_assistant.mock_tools import MockMemoryTools
@@ -10,7 +10,7 @@ class TestKnowledgeInterface(unittest.TestCase):
     def setUp(self):
         self.memory = MockMemoryTools()
         self.kg = KnowledgeGraphInterface(self.memory)
-        self.provenance = Provenance("user", datetime.utcnow().isoformat(), 1.0, "trace-kg")
+        self.provenance = Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace-kg")
 
     def test_create_prototype_and_concept(self):
         proto = self.kg.create_prototype(

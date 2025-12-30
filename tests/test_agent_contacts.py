@@ -1,5 +1,7 @@
 import unittest
 
+from datetime import datetime, timezone
+
 from src.personal_assistant.agent import PersonalAssistantAgent
 from src.personal_assistant.mock_tools import (
     MockMemoryTools,

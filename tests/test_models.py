@@ -1,13 +1,13 @@
 import unittest
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from src.personal_assistant.models import Provenance, Node, Edge
 
 class TestModels(unittest.TestCase):
 
     def test_provenance_creation(self):
         """Test the creation of a Provenance object."""
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         provenance = Provenance(
             source="user",
             ts=now,

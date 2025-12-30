@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.personal_assistant.models import Node, Provenance
 from src.personal_assistant.mock_tools import MockMemoryTools
@@ -10,7 +10,7 @@ class TestTaskQueue(unittest.TestCase):
     def setUp(self):
         self.memory = MockMemoryTools()
         self.queue_manager = TaskQueueManager(self.memory)
-        self.provenance = Provenance("user", datetime.utcnow().isoformat(), 1.0, "trace-queue")
+        self.provenance = Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace-queue")
 
     def test_enqueue_and_sort(self):
         task_a = Node(kind="Task", labels=["A"], props={"title": "A", "priority": 2, "due": "2025-01-02"})

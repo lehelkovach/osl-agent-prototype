@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.personal_assistant.models import Provenance, Node
 from src.personal_assistant.mock_tools import MockMemoryTools, MockContactsTools
@@ -9,7 +9,7 @@ class TestContacts(unittest.TestCase):
     def setUp(self):
         self.memory = MockMemoryTools()
         self.contacts = MockContactsTools()
-        self.provenance = Provenance("user", datetime.utcnow().isoformat(), 1.0, "trace-contacts")
+        self.provenance = Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace-contacts")
 
     def test_create_and_list_contacts(self):
         res = self.contacts.create(

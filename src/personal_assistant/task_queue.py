@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from src.personal_assistant.models import Node, Provenance
@@ -24,8 +24,8 @@ class TaskQueueManager:
                 props={
                     "name": self.name,
                     "items": [],
-                    "created_at": datetime.utcnow().isoformat(),
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
             self.memory.upsert(self.queue_node, provenance)
@@ -41,11 +41,11 @@ class TaskQueueManager:
                 "priority": task_node.props.get("priority"),
                 "due": task_node.props.get("due"),
                 "status": task_node.props.get("status", "pending"),
-                "created_at": datetime.utcnow().isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
         queue.props["items"] = self._sort_items(items)
-        queue.props["updated_at"] = datetime.utcnow().isoformat()
+        queue.props["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.memory.upsert(queue, provenance)
         return queue
 
@@ -55,7 +55,7 @@ class TaskQueueManager:
             if item["task_uuid"] == task_uuid:
                 item["status"] = status
                 break
-        queue.props["updated_at"] = datetime.utcnow().isoformat()
+        queue.props["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.memory.upsert(queue, provenance)
         return queue
 
