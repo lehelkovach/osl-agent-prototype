@@ -275,6 +275,15 @@ class PersonalAssistantAgent:
         except Exception:
             # Do not fail the agent loop on logging errors
             pass
+        self._emit(
+            "message_logged",
+            {
+                "role": role,
+                "content": content,
+                "ts": provenance.ts,
+                "trace_id": provenance.trace_id,
+            },
+        )
 
     def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
         """Emit events safely, supporting sync call sites."""

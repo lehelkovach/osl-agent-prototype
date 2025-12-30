@@ -64,12 +64,18 @@ class TestAgentEvents(unittest.TestCase):
         self.assertIn("request_received", event_types)
         self.assertIn("plan_ready", event_types)
         self.assertIn("execution_completed", event_types)
+        self.assertIn("message_logged", event_types)
 
         # History captured with embeddings
         history = [n for n in memory.nodes.values() if n.kind == "Message"]
         self.assertEqual(len(history), 2)
         for h in history:
             self.assertEqual(h.llm_embedding, [0.4, 0.5, 0.6])
+
+        # Raw LLM text present in plan_ready payload
+        plan_event = next(e for e in events if e.type == "plan_ready")
+        self.assertIn("raw_llm", plan_event.payload)
+        self.assertIn("event test", plan_event.payload["raw_llm"])
 
 
 if __name__ == "__main__":
