@@ -70,9 +70,17 @@ class ChromaMemoryTools(MemoryTools):
     ) -> Dict[str, Any]:
         """Persists the item into Chroma."""
         payload = item.__dict__.copy()
+        labels = payload.get("labels")
+        if isinstance(labels, list):
+            labels_meta = ",".join(labels)
+        elif labels is None:
+            labels_meta = None
+        else:
+            labels_meta = str(labels)
+
         meta = {
-            "kind": payload.get("kind"),
-            "labels": payload.get("labels"),
+            "kind": str(payload.get("kind")),
+            "labels": labels_meta,
             "provenance_source": provenance.source,
             "provenance_trace_id": provenance.trace_id,
         }
