@@ -66,6 +66,10 @@ class PersonalAssistantAgent:
             calendar_context,
             contacts_context,
         )
+        if plan.get("error") or not plan.get("steps"):
+            fallback = self._fallback_plan(intent, user_request)
+            if fallback:
+                plan = fallback
 
         # 4. Execute via Tools
         execution_results = self._execute_plan(plan, provenance)
@@ -207,3 +211,27 @@ class PersonalAssistantAgent:
             return self.openai_client.embed(text)
         except Exception:
             return None
+
+    def _fallback_plan(self, intent: str, user_request: str) -> Optional[Dict[str, Any]]:
+        """
+        Provide a basic deterministic plan when LLM planning fails.
+        """
+        if intent == "task":
+            return {
+                "intent": intent,
+                "fallback": True,
+                "steps": [
+                    {
+                        "tool": "tasks.create",
+                        "params": {
+                            "title": user_request,
+                            "due": None,
+                            "priority": 3,
+                            "notes": "Created via fallback plan",
+                            "links": [],
+                        },
+                        "comment": "Fallback task creation when LLM plan failed",
+                    }
+                ],
+            }
+        return None
