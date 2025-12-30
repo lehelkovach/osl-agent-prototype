@@ -247,6 +247,17 @@ class PersonalAssistantAgent:
             elif tool_name == "web.wait_for" and self.web:
                 res = self.web.wait_for(**params)
                 results.append(res)
+            elif tool_name == "queue.update":
+                queue = self.queue_manager.update_items(params.get("items", []), provenance)
+                res = {"status": "success", "queue": queue.props.get("items", [])}
+                results.append(res)
+                self._emit(
+                    "queue_updated",
+                    {
+                        "trace_id": provenance.trace_id,
+                        "items": queue.props.get("items", []),
+                    },
+                )
             else:
                 results.append({"status": "no action taken", "tool": tool_name})
             # Emit tool invocation event with params and result

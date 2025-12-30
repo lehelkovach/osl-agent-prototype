@@ -59,6 +59,26 @@ class TaskQueueManager:
         self.memory.upsert(queue, provenance)
         return queue
 
+    def update_items(self, updates: List[Dict[str, Any]], provenance: Provenance) -> Node:
+        """
+        Update items' priority/due/status by task_uuid, then re-sort.
+        """
+        queue = self.ensure_queue(provenance)
+        items = queue.props.get("items", [])
+        for upd in updates:
+            for item in items:
+                if item.get("task_uuid") == upd.get("task_uuid"):
+                    if "priority" in upd:
+                        item["priority"] = upd["priority"]
+                    if "due" in upd:
+                        item["due"] = upd["due"]
+                    if "status" in upd:
+                        item["status"] = upd["status"]
+        queue.props["items"] = self._sort_items(items)
+        queue.props["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.memory.upsert(queue, provenance)
+        return queue
+
     def _sort_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         def sort_key(item: Dict[str, Any]):
             priority = item.get("priority") if item.get("priority") is not None else 999

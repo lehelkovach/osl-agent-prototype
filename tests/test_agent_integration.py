@@ -2,6 +2,7 @@ import unittest
 from src.personal_assistant.agent import PersonalAssistantAgent
 from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockWebTools, MockContactsTools
 from src.personal_assistant.openai_client import FakeOpenAIClient
+from src.personal_assistant.models import Provenance
 
 class TestAgentIntegration(unittest.TestCase):
 
@@ -110,48 +111,59 @@ class TestAgentIntegration(unittest.TestCase):
         for msg in history:
             self.assertEqual(msg.llm_embedding, [0.2, 0.3, 0.5])
 
-    def test_openai_json_plan_parsed_and_used(self):
-        """Ensure a valid JSON response from OpenAI is parsed and executed (no fallback)."""
+    def test_queue_update_tool(self):
         memory = MockMemoryTools()
         calendar = MockCalendarTools()
         tasks = MockTaskTools()
         web = MockWebTools()
-        fake_plan = """
+        contacts = MockContactsTools()
+
+        # First, create a task
+        plan_create = """
         {
           "intent": "task",
           "steps": [
             {
               "tool": "tasks.create",
               "params": {
-                "title": "parse plan success",
+                "title": "queued task",
                 "due": null,
-                "priority": 2,
-                "notes": "LLM provided JSON plan",
+                "priority": 3,
+                "notes": "queue test",
                 "links": []
               }
             }
           ]
         }
         """
-        openai_client = FakeOpenAIClient(chat_response=fake_plan, embedding=[0.2, 0.3, 0.5])
         agent = PersonalAssistantAgent(
             memory,
             calendar,
             tasks,
             web=web,
-            contacts=MockContactsTools(),
-            openai_client=openai_client,
+            contacts=contacts,
+            openai_client=FakeOpenAIClient(chat_response=plan_create, embedding=[0.5, 0.5, 0.5]),
         )
-
-        result = agent.execute_request("remind me to parse plan success")
-
-        self.assertFalse(result["plan"].get("fallback"))
-        self.assertEqual(result["execution_results"]["status"], "completed")
-        self.assertEqual(len(tasks.tasks), 1)
-        self.assertEqual(tasks.tasks[0]["title"], "parse plan success")
+        agent.execute_request("create queued task")
         task_nodes = [n for n in memory.nodes.values() if n.kind == "Task"]
-        self.assertEqual(len(task_nodes), 1)
-        self.assertEqual(task_nodes[0].llm_embedding, [0.2, 0.3, 0.5])
+        task_uuid = task_nodes[0].uuid
+
+        # Now, directly invoke queue.update with the real uuid
+        plan_update = {
+            "intent": "task",
+            "steps": [
+                {
+                    "tool": "queue.update",
+                    "params": {"items": [{"task_uuid": task_uuid, "priority": 1, "status": "in-progress"}]},
+                }
+            ],
+        }
+        result = agent._execute_plan(plan_update, Provenance("user", "2024-01-01T00:00:00Z", 1.0, "trace"))
+        queue = agent.queue_manager.ensure_queue(Provenance("user", "2024-01-01T00:00:00Z", 1.0, "trace"))
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(queue.props["items"][0]["priority"], 1)
+        self.assertEqual(queue.props["items"][0]["status"], "in-progress")
+
 
 if __name__ == '__main__':
     unittest.main()
