@@ -45,6 +45,7 @@ flowchart TB
    - optionally `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`).
 3) Configure optional Arango memory:
    - Set `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD` to enable Arango-backed memory.
+   - If using a custom CA (e.g., ArangoDB Cloud), set `ARANGO_VERIFY` to the CA path (do not commit certs); set to `false` only for local/self-signed dev.
 4) Run the demo:
    - `python main.py` (order: Arango if env is set → Chroma at `.chroma/` → in-memory mock).
 5) Run tests:

@@ -7,9 +7,12 @@ __pycache__/
 venv/
 env/
 .env
+.env.*
+!.env.example
 .pytest_cache/
 .chroma/
 .idea/
 .vscode/
 .mypy_cache/
-.env.*
+*.crt
+*.pem

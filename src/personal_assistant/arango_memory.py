@@ -26,6 +26,7 @@ class ArangoMemoryTools(MemoryTools):
         db_name: Optional[str] = None,
         nodes_collection: str = "nodes",
         edges_collection: str = "edges",
+        verify: Optional[Union[str, bool]] = None,
     ):
         self.url = url or os.getenv("ARANGO_URL", "http://localhost:8529")
         self.username = username or os.getenv("ARANGO_USER", "root")
@@ -33,8 +34,9 @@ class ArangoMemoryTools(MemoryTools):
         self.db_name = db_name or os.getenv("ARANGO_DB", "agent_memory")
         self.nodes_collection_name = nodes_collection
         self.edges_collection_name = edges_collection
+        self.verify = self._resolve_verify(verify)
 
-        self.client = ArangoClient(hosts=self.url)
+        self.client = ArangoClient(hosts=self.url, verify=self.verify)
         # Connect (create db if needed and permitted)
         sys_db = self.client.db("_system", username=self.username, password=self.password)
         if not sys_db.has_database(self.db_name):
@@ -113,3 +115,22 @@ class ArangoMemoryTools(MemoryTools):
             self.edges.insert(edge, overwrite=True)
             return {"status": "success", "uuid": item.uuid}
         return {"status": "error", "error": "unknown item type"}
+
+    def _resolve_verify(self, verify: Optional[Union[str, bool]]) -> Union[str, bool]:
+        """
+        Resolve TLS verification value for ArangoClient.
+        - If verify is provided, use it.
+        - Otherwise read ARANGO_VERIFY:
+            * "false"/"0"/"no" => False
+            * path to a cert file => used as verify path
+            * unset => True
+        """
+        if verify is not None:
+            return verify
+        env_val = os.getenv("ARANGO_VERIFY")
+        if env_val is None:
+            return True
+        lowered = env_val.lower()
+        if lowered in ("false", "0", "no"):
+            return False
+        return env_val
