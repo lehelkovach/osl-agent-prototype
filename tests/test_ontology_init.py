@@ -21,6 +21,23 @@ class TestOntologyInit(unittest.TestCase):
         self.assertEqual(ids_first, ids_second)
         self.assertEqual(len(memory.nodes), len(DEFAULT_PROTOTYPES))
 
+    def test_task_inherits_from_dag(self):
+        memory = MockMemoryTools()
+
+        def embed(text):
+            return [0.5, 0.5]
+
+        ensure_default_prototypes(memory, embed, trace_id="test-inherit")
+        dag = [n for n in memory.nodes.values() if n.props.get("name") == "DAG"]
+        task = [n for n in memory.nodes.values() if n.props.get("name") == "Task"]
+        self.assertEqual(len(dag), 1)
+        self.assertEqual(len(task), 1)
+        # Edge should exist from Task -> DAG
+        inherits_edges = [e for e in memory.edges.values() if e.rel == "inherits_from"]
+        self.assertEqual(len(inherits_edges), 1)
+        self.assertEqual(inherits_edges[0].from_node, task[0].uuid)
+        self.assertEqual(inherits_edges[0].to_node, dag[0].uuid)
+
 
 if __name__ == "__main__":
     unittest.main()

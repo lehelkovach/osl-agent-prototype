@@ -1,7 +1,7 @@
 from typing import List
 from datetime import datetime, timezone
 
-from src.personal_assistant.models import Provenance, Node
+from src.personal_assistant.models import Provenance, Node, Edge
 from src.personal_assistant.tools import MemoryTools
 
 
@@ -29,6 +29,13 @@ DEFAULT_PROTOTYPES = [
         "description": "Prototype for directed acyclic graph modeling procedural logic with nested nodes",
         "context": "graph structure for procedural logic",
         "labels": ["prototype", "dag"],
+    },
+    {
+        "name": "Task",
+        "description": "Prototype for tasks represented as DAG-backed procedures",
+        "context": "task planning and execution",
+        "labels": ["prototype", "task"],
+        "base": "DAG",
     },
 ]
 
@@ -73,5 +80,20 @@ def ensure_default_prototypes(memory: MemoryTools, embedding_fn, trace_id: str =
         except Exception:
             node.llm_embedding = None
         memory.upsert(node, provenance, embedding_request=True)
+        existing[proto["name"]] = node
         ensured.append(node.uuid)
+        # Link to base prototype if specified and available
+        base_name = proto.get("base")
+        if base_name and base_name in existing:
+            base_uuid = existing[base_name].uuid if hasattr(existing[base_name], "uuid") else existing[base_name].get("uuid")
+            try:
+                edge = Edge(
+                    from_node=node.uuid,
+                    to_node=base_uuid,
+                    rel="inherits_from",
+                    props={"child": proto["name"], "parent": base_name},
+                )
+                memory.upsert(edge, provenance, embedding_request=False)
+            except Exception:
+                pass
     return ensured

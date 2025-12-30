@@ -20,8 +20,13 @@ flowchart TB
     Agent --> Calendar["CalendarTools (mock)"]
     Agent --> Contacts["ContactsTools (mock)"]
     Agent --> Web["WebTools (Playwright/Appium)"]
+    Agent --> Events["EventBus (emits lifecycle/tool/memory events)"]
+    Agent --> VersionedDocs["VersionedDocumentStore (versions + embeddings)"]
+    Agent --> Ontology["Ontology Init (Prototypes: Person, Event, Procedure, DAG)"]
     Queue --> Chroma
     Queue --> Arango
+    VersionedDocs --> Chroma
+    VersionedDocs --> Arango
 ```
 
 ## Components
@@ -30,9 +35,12 @@ flowchart TB
 - `src/personal_assistant/arango_memory.py`: `MemoryTools` backed by ArangoDB graph storage (nodes/edges with embeddings on nodes).
 - `src/personal_assistant/mock_tools.py`: In-memory mocks for memory, calendar, tasks, contacts, and web.
 - `src/personal_assistant/task_queue.py`: Maintains prioritized task queue node in memory.
+- `src/personal_assistant/ontology_init.py`: Seeds default prototypes (Person, Event, Procedure, DAG) into memory.
+- `src/personal_assistant/versioned_document.py`: Versioned JSON metadata store with embeddings, links to concepts and version chains.
 - `src/personal_assistant/openai_client.py`: Thin wrapper around OpenAI chat/embeddings with a fake for tests.
 - `src/personal_assistant/prompts.py`: System/developer prompts that define the planning contract and tool catalog.
 - `src/personal_assistant/web_tools.py`: Playwright-backed primitive web commandlets including DOM fetch + screenshot for vision and selector/xpath/coordinate clicks.
+- `src/personal_assistant/service.py`: FastAPI service wrapper exposing `/health` and `/chat` (returns plan, results, and emitted events).
 - `main.py`: Demo entrypoint wiring the agent with Chroma memory (fallback to mock if Chroma fails).
 - `tests/`: Unit and integration coverage for models, mocks, task queue, and the agent’s happy path.
 
