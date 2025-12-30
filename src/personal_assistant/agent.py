@@ -21,6 +21,7 @@ class PersonalAssistantAgent:
         web: Optional[WebTools] = None,
         contacts: Optional["ContactsTools"] = None,
         openai_client: Optional[OpenAIClient] = None,
+        event_bus: Optional[EventBus] = None,
     ):
         self.memory = memory
         self.calendar = calendar
@@ -31,6 +32,7 @@ class PersonalAssistantAgent:
         self.developer_prompt = DEVELOPER_PROMPT
         self.openai_client: OpenAIClient = openai_client or OpenAIClient()
         self.queue_manager = TaskQueueManager(memory)
+        self.event_bus: EventBus = event_bus or NullEventBus()
 
     def execute_request(self, user_request: str) -> Dict[str, Any]:
         """
@@ -45,6 +47,7 @@ class PersonalAssistantAgent:
 
         # 0. Log user message into history
         self._log_message("user", user_request, provenance)
+        self._emit("request_received", {"user_request": user_request, "trace_id": provenance.trace_id})
 
         # 1. Classify Intent (simple heuristic)
         intent = self._classify_intent(user_request)
@@ -77,9 +80,22 @@ class PersonalAssistantAgent:
             fallback = self._fallback_plan(intent, user_request)
             if fallback:
                 plan = fallback
+        self._emit(
+            "plan_ready",
+            {
+                "plan": plan,
+                "raw_llm": raw_llm,
+                "trace_id": provenance.trace_id,
+                "fallback": plan.get("fallback", False),
+            },
+        )
 
         # 4. Execute via Tools
         execution_results = self._execute_plan(plan, provenance)
+        self._emit(
+            "execution_completed",
+            {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
+        )
 
         # 5. Write Back (already handled per tool)
         return {"plan": plan, "execution_results": execution_results}
@@ -259,3 +275,12 @@ class PersonalAssistantAgent:
         except Exception:
             # Do not fail the agent loop on logging errors
             pass
+
+    def _emit(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Emit events safely, supporting sync call sites."""
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.event_bus.emit(event_type, payload))
+        except RuntimeError:
+            # No running loop
+            asyncio.run(self.event_bus.emit(event_type, payload))
