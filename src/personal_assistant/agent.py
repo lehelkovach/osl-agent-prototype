@@ -1,0 +1,177 @@
+import json
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+
+from src.personal_assistant.prompts import SYSTEM_PROMPT, DEVELOPER_PROMPT
+from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools
+from src.personal_assistant.models import Node, Provenance
+from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
+from src.personal_assistant.task_queue import TaskQueueManager
+
+class PersonalAssistantAgent:
+    """A personal assistant agent that follows a structured execution loop."""
+
+    def __init__(
+        self,
+        memory: MemoryTools,
+        calendar: CalendarTools,
+        tasks: TaskTools,
+        web: Optional[WebTools] = None,
+        openai_client: Optional[OpenAIClient] = None,
+    ):
+        self.memory = memory
+        self.calendar = calendar
+        self.tasks = tasks
+        self.web = web
+        self.system_prompt = SYSTEM_PROMPT
+        self.developer_prompt = DEVELOPER_PROMPT
+        self.openai_client: OpenAIClient = openai_client or OpenAIClient()
+        self.queue_manager = TaskQueueManager(memory)
+
+    def execute_request(self, user_request: str) -> Dict[str, Any]:
+        """
+        Executes a user request by following the defined workflow.
+        """
+        provenance = Provenance(
+            source="user",
+            ts=datetime.utcnow().isoformat(),
+            confidence=1.0,
+            trace_id="agent-trace-1",
+        )
+
+        # 1. Classify Intent (simple heuristic)
+        intent = self._classify_intent(user_request)
+
+        # 2. Retrieve Memory (+ optional embedding) and supporting context
+        query_embedding = self._embed_text(user_request)
+        memory_results = self.memory.search(
+            user_request, top_k=5, query_embedding=query_embedding
+        )
+        tasks_context = self.tasks.list() if self.tasks else []
+        calendar_context = (
+            self.calendar.list({"start": "1970-01-01", "end": "2100-01-01"})
+            if self.calendar
+            else []
+        )
+
+        # 3. Propose a Plan (LLM)
+        plan = self._generate_plan(
+            intent, user_request, memory_results, tasks_context, calendar_context
+        )
+
+        # 4. Execute via Tools
+        execution_results = self._execute_plan(plan, provenance)
+
+        # 5. Write Back (already handled per tool)
+        return {"plan": plan, "execution_results": execution_results}
+
+    def _classify_intent(self, user_request: str) -> str:
+        """Simulates intent classification based on keywords."""
+        if "remind me to" in user_request or "add task" in user_request:
+            return "task"
+        elif "schedule" in user_request or "meeting" in user_request:
+            return "schedule"
+        elif "remember" in user_request:
+            return "remember"
+        else:
+            return "inform"
+
+    def _generate_plan(
+        self,
+        intent: str,
+        user_request: str,
+        memory_results: list,
+        tasks_context: list,
+        calendar_context: list,
+    ) -> Dict[str, Any]:
+        """Generates a plan by calling the LLM for structured JSON."""
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self.developer_prompt},
+            {"role": "user", "content": f"User request: {user_request}"},
+            {"role": "user", "content": f"Intent: {intent}"},
+            {"role": "user", "content": f"Memory results: {json.dumps(memory_results)}"},
+            {"role": "user", "content": f"Tasks context: {json.dumps(tasks_context)}"},
+            {
+                "role": "user",
+                "content": f"Calendar context: {json.dumps(calendar_context)}",
+            },
+            {
+                "role": "user",
+                "content": "Return a strict JSON plan object with intent and steps as described. No prose.",
+            },
+        ]
+        try:
+            llm_text = self.openai_client.chat(messages, temperature=0.0)
+            return json.loads(llm_text)
+        except Exception as e:
+            return {"intent": intent, "steps": [], "error": str(e)}
+
+    def _execute_plan(self, plan: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """Executes each step in the plan by calling the appropriate tool."""
+        results = []
+        for step in plan.get("steps", []):
+            tool_name = step.get("tool")
+            params = step.get("params", {})
+            if tool_name == "tasks.create":
+                res = self.tasks.create(**params)
+                if res.get("status") == "success" and "task" in res:
+                    task_node = self._task_to_node(res["task"])
+                    task_node.llm_embedding = self._embed_text(task_node.props.get("title", ""))
+                    self.memory.upsert(task_node, provenance, embedding_request=True)
+                    self.queue_manager.enqueue(task_node, provenance)
+                results.append(res)
+            elif tool_name == "calendar.create_event":
+                res = self.calendar.create_event(**params)
+                if res.get("status") == "success" and "event" in res:
+                    event_node = Node(
+                        kind="Event",
+                        labels=[res["event"]["title"]],
+                        props=res["event"],
+                    )
+                    event_node.llm_embedding = self._embed_text(res["event"]["title"])
+                    self.memory.upsert(event_node, provenance, embedding_request=True)
+                results.append(res)
+            elif tool_name == "web.get" and self.web:
+                res = self.web.get(**params)
+                results.append(res)
+            elif tool_name == "web.post" and self.web:
+                res = self.web.post(**params)
+                results.append(res)
+            elif tool_name == "web.screenshot" and self.web:
+                res = self.web.screenshot(**params)
+                results.append(res)
+            elif tool_name == "web.get_dom" and self.web:
+                res = self.web.get_dom(**params)
+                results.append(res)
+            elif tool_name == "web.click_selector" and self.web:
+                res = self.web.click_selector(**params)
+                results.append(res)
+            elif tool_name == "web.click_xpath" and self.web:
+                res = self.web.click_xpath(**params)
+                results.append(res)
+            elif tool_name == "web.click_xy" and self.web:
+                res = self.web.click_xy(**params)
+                results.append(res)
+            elif tool_name == "web.fill" and self.web:
+                res = self.web.fill(**params)
+                results.append(res)
+            elif tool_name == "web.wait_for" and self.web:
+                res = self.web.wait_for(**params)
+                results.append(res)
+            else:
+                results.append({"status": "no action taken", "tool": tool_name})
+        if not results:
+            return {"status": "no action taken"}
+        return {"status": "completed", "steps": results}
+
+    def _task_to_node(self, task_data: Dict[str, Any]) -> Node:
+        return Node(kind="Task", labels=[task_data.get("title", "task")], props=task_data)
+
+    def _embed_text(self, text: str) -> Optional[List[float]]:
+        if not text:
+            return None
+        try:
+            return self.openai_client.embed(text)
+        except Exception:
+            return None

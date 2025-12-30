@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "osl-agent-prototype"
+version = "0.1.0"
+description = "Personal assistant agent prototype with OpenAI-backed planning and semantic memory."
+authors = ["Your Name <you@example.com>"]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+openai = ">=1.43.0"
+python-dotenv = ">=1.0.1"
+playwright = ">=1.46.0"
+appium-python-client = ">=3.2.1"
+chromadb = ">=0.5.5"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
