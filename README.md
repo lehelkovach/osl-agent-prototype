@@ -40,8 +40,8 @@ flowchart TB
 1) Install dependencies (use Poetry or pip):
    - `pip install -r requirements.txt`
    - or `poetry install`
-2) Set environment for OpenAI:
-   - `export OPENAI_API_KEY=...`
+2) Set environment for OpenAI (e.g., in `.env.local`):
+   - `OPENAI_API_KEY=...`
    - optionally `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`).
 3) Configure optional Arango memory:
    - Set `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD` to enable Arango-backed memory.

@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 from src.personal_assistant.agent import PersonalAssistantAgent
 from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools
 from src.personal_assistant.chroma_memory import ChromaMemoryTools
@@ -8,6 +9,10 @@ def main():
     """
     Main function to run a demonstration of the personal assistant agent.
     """
+    # Load env from .env.local (preferred) and .env
+    load_dotenv(".env.local")
+    load_dotenv()
+
     # Initialize the tools
     memory = None
     if os.getenv("ARANGO_URL"):
@@ -42,7 +47,8 @@ def main():
     print(f"Execution Results: {result['execution_results']}")
     print("\n--- State After Execution ---")
     print(f"Tasks: {tasks.tasks}")
-    print(f"Memory Nodes: {memory.nodes}")
+    mem_nodes = getattr(memory, "nodes", "external store")
+    print(f"Memory Nodes: {mem_nodes}")
     print("\nDemonstration complete.")
 
 if __name__ == "__main__":
