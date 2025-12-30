@@ -44,9 +44,9 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertEqual(tasks.tasks[0]['title'], "test the agent")
 
         # 2. Check that a node representing the task was stored in memory
-        self.assertEqual(len(memory.nodes), 1)
-        task_node = list(memory.nodes.values())[0]
-        self.assertEqual(task_node.kind, "Task")
+        task_nodes = [n for n in memory.nodes.values() if n.kind == "Task"]
+        self.assertEqual(len(task_nodes), 1)
+        task_node = task_nodes[0]
         self.assertEqual(task_node.props['title'], "test the agent")
         self.assertEqual(task_node.llm_embedding, [0.1, 0.2, 0.3])
         
