@@ -9,9 +9,9 @@ def main():
     """
     Main function to run a demonstration of the personal assistant agent.
     """
-    # Load env from .env.local (preferred) and .env
-    load_dotenv(".env.local")
-    load_dotenv()
+    # Load env from .env.local (preferred) and .env without relying on auto-discovery
+    load_dotenv(".env.local", override=False)
+    load_dotenv(".env", override=False)
 
     # Initialize the tools
     memory = None

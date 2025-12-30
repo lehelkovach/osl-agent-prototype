@@ -36,7 +36,7 @@ class ArangoMemoryTools(MemoryTools):
         self.edges_collection_name = edges_collection
         self.verify = self._resolve_verify(verify)
 
-        self.client = ArangoClient(hosts=self.url, verify=self.verify)
+        self.client = ArangoClient(hosts=self.url, verify_override=self.verify)
         # Connect (create db if needed and permitted)
         sys_db = self.client.db("_system", username=self.username, password=self.password)
         if not sys_db.has_database(self.db_name):
