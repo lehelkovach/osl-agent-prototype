@@ -39,6 +39,8 @@ class TestAgentFallback(unittest.TestCase):
         self.assertEqual(len(tasks.tasks), 1)
         self.assertTrue(result["plan"].get("fallback"))
         self.assertEqual(tasks.tasks[0]["title"], "remind me to test fallback")
+        history = [n for n in memory.nodes.values() if n.kind == "Message"]
+        self.assertEqual(len(history), 2)  # user + assistant
 
     def test_fallback_plan_creates_task_on_empty_steps(self):
         memory = MockMemoryTools()

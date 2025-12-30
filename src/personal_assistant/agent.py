@@ -1,4 +1,5 @@
 import json
+import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
@@ -7,6 +8,7 @@ from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, 
 from src.personal_assistant.models import Node, Provenance
 from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
 from src.personal_assistant.task_queue import TaskQueueManager
+from src.personal_assistant.events import EventBus, NullEventBus
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -41,6 +43,9 @@ class PersonalAssistantAgent:
             trace_id="agent-trace-1",
         )
 
+        # 0. Log user message into history
+        self._log_message("user", user_request, provenance)
+
         # 1. Classify Intent (simple heuristic)
         intent = self._classify_intent(user_request)
 
@@ -58,7 +63,7 @@ class PersonalAssistantAgent:
         contacts_context = self.contacts.list() if self.contacts else []
 
         # 3. Propose a Plan (LLM)
-        plan = self._generate_plan(
+        plan, raw_llm = self._generate_plan(
             intent,
             user_request,
             memory_results,
@@ -66,6 +71,8 @@ class PersonalAssistantAgent:
             calendar_context,
             contacts_context,
         )
+        if raw_llm:
+            self._log_message("assistant", raw_llm, provenance)
         if plan.get("error") or not plan.get("steps"):
             fallback = self._fallback_plan(intent, user_request)
             if fallback:
@@ -96,8 +103,8 @@ class PersonalAssistantAgent:
         tasks_context: list,
         calendar_context: list,
         contacts_context: list,
-    ) -> Dict[str, Any]:
-        """Generates a plan by calling the LLM for structured JSON."""
+    ) -> (Dict[str, Any], Optional[str]):
+        """Generates a plan by calling the LLM for structured JSON. Returns plan and raw LLM text."""
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "system", "content": self.developer_prompt},
@@ -120,9 +127,10 @@ class PersonalAssistantAgent:
         ]
         try:
             llm_text = self.openai_client.chat(messages, temperature=0.0)
-            return json.loads(llm_text)
+            return json.loads(llm_text), llm_text
         except Exception as e:
-            return {"intent": intent, "steps": [], "error": str(e)}
+            llm_text = locals().get("llm_text", None)
+            return {"intent": intent, "steps": [], "error": str(e)}, llm_text
 
     def _execute_plan(self, plan: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
         """Executes each step in the plan by calling the appropriate tool."""
@@ -235,3 +243,19 @@ class PersonalAssistantAgent:
                 ],
             }
         return None
+
+    def _log_message(self, role: str, content: str, provenance: Provenance) -> None:
+        """Persist conversation messages with embeddings into history."""
+        if not content:
+            return
+        msg_node = Node(
+            kind="Message",
+            labels=["history", role],
+            props={"role": role, "content": content, "ts": provenance.ts},
+        )
+        msg_node.llm_embedding = self._embed_text(content)
+        try:
+            self.memory.upsert(msg_node, provenance, embedding_request=True)
+        except Exception:
+            # Do not fail the agent loop on logging errors
+            pass
