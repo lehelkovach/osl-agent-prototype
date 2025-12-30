@@ -50,6 +50,8 @@ flowchart TB
    - `python main.py` (order: Arango if env is set → Chroma at `.chroma/` → in-memory mock).
 5) Run tests:
    - `python -m pytest`
+6) Run the HTTP service (FastAPI):
+   - `uvicorn src.personal_assistant.service:build_app --factory --reload`
 
 ## Project History
 - Phase 1: In-memory mock tools and OpenAI wrapper with prompts + integration test harness.

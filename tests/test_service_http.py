@@ -56,6 +56,7 @@ class TestAgentHTTPService(unittest.TestCase):
         data = res.json()
 
         self.assertEqual(data["results"]["status"], "completed")
+        self.assertEqual(data["plan"]["intent"], "task")
         events = data["events"]
         types = [e["type"] for e in events]
         # Ensure lifecycle events and tool invocation present

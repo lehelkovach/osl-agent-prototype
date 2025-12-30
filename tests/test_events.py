@@ -70,6 +70,7 @@ class TestAgentEvents(unittest.TestCase):
         result = agent.execute_request("remind me to cover events")
 
         self.assertEqual(result["execution_results"]["status"], "completed")
+        self.assertEqual(result["plan"]["intent"], "task")
         # Events captured for request, plan, execution
         event_types = [e.type for e in events]
         self.assertIn("request_received", event_types)
