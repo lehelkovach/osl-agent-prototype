@@ -133,4 +133,7 @@ class ArangoMemoryTools(MemoryTools):
         lowered = env_val.lower()
         if lowered in ("false", "0", "no"):
             return False
-        return env_val
+        if lowered in ("true", "1", "yes"):
+            return True
+        # Treat other string values as a path to a CA bundle
+        return os.path.abspath(os.path.expanduser(env_val))
