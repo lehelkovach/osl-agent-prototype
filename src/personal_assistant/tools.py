@@ -48,6 +48,19 @@ class TaskTools(ABC):
         """Creates a new task."""
         pass
 
+class ContactsTools(ABC):
+    """Interface for contacts management operations."""
+
+    @abstractmethod
+    def list(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Lists contacts based on optional filters."""
+        pass
+
+    @abstractmethod
+    def create(self, name: str, emails: List[str], phones: List[str], org: Optional[str], notes: str, tags: List[str]) -> Dict[str, Any]:
+        """Creates a new contact."""
+        pass
+
 
 class WebTools(ABC):
     """Interface for primitive web commandlets."""

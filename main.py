@@ -1,18 +1,28 @@
+import os
 from src.personal_assistant.agent import PersonalAssistantAgent
 from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools
 from src.personal_assistant.chroma_memory import ChromaMemoryTools
+from src.personal_assistant.arango_memory import ArangoMemoryTools
 
 def main():
     """
     Main function to run a demonstration of the personal assistant agent.
     """
     # Initialize the tools
-    try:
-        memory = ChromaMemoryTools()
-        print("Using ChromaDB-backed memory at ./.chroma")
-    except Exception as e:
-        print(f"Falling back to in-memory mock memory (Chroma unavailable: {e})")
-        memory = MockMemoryTools()
+    memory = None
+    if os.getenv("ARANGO_URL"):
+        try:
+            memory = ArangoMemoryTools()
+            print(f"Using ArangoDB memory at {os.getenv('ARANGO_URL')} db={os.getenv('ARANGO_DB', 'agent_memory')}")
+        except Exception as e:
+            print(f"Arango unavailable, trying ChromaDB (error: {e})")
+    if memory is None:
+        try:
+            memory = ChromaMemoryTools()
+            print("Using ChromaDB-backed memory at ./.chroma")
+        except Exception as e:
+            print(f"Falling back to in-memory mock memory (Chroma unavailable: {e})")
+            memory = MockMemoryTools()
     calendar = MockCalendarTools()
     tasks = MockTaskTools()
 

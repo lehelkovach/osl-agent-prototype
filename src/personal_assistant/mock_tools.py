@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Union, Optional
 import math
 import base64
 from src.personal_assistant.models import Node, Edge, Provenance
-from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools
+from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ContactsTools
 
 class MockMemoryTools(MemoryTools):
     """A mock implementation of MemoryTools that stores data in-memory."""
@@ -92,6 +92,40 @@ class MockTaskTools(TaskTools):
         self.tasks.append(task)
         print(f"Created task: {title}")
         return {"status": "success", "task": task}
+
+class MockContactsTools(ContactsTools):
+    """A mock implementation of ContactsTools that stores contacts in-memory."""
+    def __init__(self):
+        self.contacts: List[Dict[str, Any]] = []
+
+    def list(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        print(f"Listing contacts with filters: {filters}")
+        if not filters:
+            return self.contacts
+        results = []
+        for c in self.contacts:
+            match = True
+            for k, v in filters.items():
+                if c.get(k) != v:
+                    match = False
+                    break
+            if match:
+                results.append(c)
+        return results
+
+    def create(self, name: str, emails: List[str], phones: List[str], org: Optional[str], notes: str, tags: List[str]) -> Dict[str, Any]:
+        contact = {
+            "name": name,
+            "emails": emails,
+            "phones": phones,
+            "org": org,
+            "notes": notes,
+            "tags": tags,
+            "status": "active",
+        }
+        self.contacts.append(contact)
+        print(f"Created contact: {name}")
+        return {"status": "success", "contact": contact}
 
 
 class MockWebTools(WebTools):

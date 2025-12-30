@@ -1,6 +1,6 @@
 import unittest
 from src.personal_assistant.agent import PersonalAssistantAgent
-from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockWebTools
+from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockWebTools, MockContactsTools
 from src.personal_assistant.openai_client import FakeOpenAIClient
 
 class TestAgentIntegration(unittest.TestCase):
@@ -14,6 +14,7 @@ class TestAgentIntegration(unittest.TestCase):
         calendar = MockCalendarTools()
         tasks = MockTaskTools()
         web = MockWebTools()
+        contacts = MockContactsTools()
         fake_plan = """
         {
           "intent": "task",
@@ -32,7 +33,14 @@ class TestAgentIntegration(unittest.TestCase):
         }
         """
         openai_client = FakeOpenAIClient(chat_response=fake_plan, embedding=[0.1, 0.2, 0.3])
-        agent = PersonalAssistantAgent(memory, calendar, tasks, web=web, openai_client=openai_client)
+        agent = PersonalAssistantAgent(
+            memory,
+            calendar,
+            tasks,
+            web=web,
+            contacts=contacts,
+            openai_client=openai_client,
+        )
 
         # Execution
         user_request = "remind me to test the agent"

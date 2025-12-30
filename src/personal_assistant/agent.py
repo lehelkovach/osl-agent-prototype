@@ -17,12 +17,14 @@ class PersonalAssistantAgent:
         calendar: CalendarTools,
         tasks: TaskTools,
         web: Optional[WebTools] = None,
+        contacts: Optional["ContactsTools"] = None,
         openai_client: Optional[OpenAIClient] = None,
     ):
         self.memory = memory
         self.calendar = calendar
         self.tasks = tasks
         self.web = web
+        self.contacts = contacts
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
         self.openai_client: OpenAIClient = openai_client or OpenAIClient()
@@ -53,10 +55,16 @@ class PersonalAssistantAgent:
             if self.calendar
             else []
         )
+        contacts_context = self.contacts.list() if self.contacts else []
 
         # 3. Propose a Plan (LLM)
         plan = self._generate_plan(
-            intent, user_request, memory_results, tasks_context, calendar_context
+            intent,
+            user_request,
+            memory_results,
+            tasks_context,
+            calendar_context,
+            contacts_context,
         )
 
         # 4. Execute via Tools
@@ -83,6 +91,7 @@ class PersonalAssistantAgent:
         memory_results: list,
         tasks_context: list,
         calendar_context: list,
+        contacts_context: list,
     ) -> Dict[str, Any]:
         """Generates a plan by calling the LLM for structured JSON."""
         messages = [
@@ -95,6 +104,10 @@ class PersonalAssistantAgent:
             {
                 "role": "user",
                 "content": f"Calendar context: {json.dumps(calendar_context)}",
+            },
+            {
+                "role": "user",
+                "content": f"Contacts context: {json.dumps(contacts_context)}",
             },
             {
                 "role": "user",
@@ -131,6 +144,25 @@ class PersonalAssistantAgent:
                     )
                     event_node.llm_embedding = self._embed_text(res["event"]["title"])
                     self.memory.upsert(event_node, provenance, embedding_request=True)
+                results.append(res)
+            elif tool_name == "contacts.create" and self.contacts:
+                res = self.contacts.create(**params)
+                if res.get("status") == "success" and "contact" in res:
+                    contact_node = Node(
+                        kind="Person",
+                        labels=[res["contact"].get("name", "contact")],
+                        props=res["contact"],
+                    )
+                    contact_node.llm_embedding = self._embed_text(
+                        " ".join(
+                            [
+                                res["contact"].get("name", ""),
+                                " ".join(res["contact"].get("emails", [])),
+                                " ".join(res["contact"].get("phones", [])),
+                            ]
+                        )
+                    )
+                    self.memory.upsert(contact_node, provenance, embedding_request=True)
                 results.append(res)
             elif tool_name == "web.get" and self.web:
                 res = self.web.get(**params)

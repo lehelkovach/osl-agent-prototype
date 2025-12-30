@@ -1,6 +1,6 @@
 # OSL Agent Prototype
 
-Lightweight personal assistant agent that plans with OpenAI, executes tool calls (tasks, calendar, web), and persists semantic memory in ChromaDB.
+Lightweight personal assistant agent that plans with OpenAI, executes tool calls (tasks, calendar, contacts, web), and persists semantic memory in ChromaDB or ArangoDB.
 
 ## Purpose & Goals
 - Build a loop that classifies intent, searches memory, plans with an LLM, executes tool calls, and writes back results.
@@ -14,17 +14,21 @@ flowchart TB
     User["User request"] --> Agent
     Agent["PersonalAssistantAgent (planning & execution)"] -->|LLM chat/embeddings| OpenAI
     Agent -->|memory.search / upsert| Chroma["ChromaDB (semantic memory)"]
+    Agent -->|memory.search / upsert| Arango["ArangoDB (graph + embeddings)"]
     Agent --> Queue["TaskQueueManager"]
     Agent --> Tasks["TaskTools (mock)"]
     Agent --> Calendar["CalendarTools (mock)"]
+    Agent --> Contacts["ContactsTools (mock)"]
     Agent --> Web["WebTools (Playwright/Appium)"]
     Queue --> Chroma
+    Queue --> Arango
 ```
 
 ## Components
 - `src/personal_assistant/agent.py`: Core loop (intent classify → memory search → LLM JSON plan → tool execution → memory upserts + queue enqueue).
 - `src/personal_assistant/chroma_memory.py`: `MemoryTools` backed by ChromaDB persistent store (`.chroma/` by default).
-- `src/personal_assistant/mock_tools.py`: In-memory mocks for memory, calendar, tasks, and web.
+- `src/personal_assistant/arango_memory.py`: `MemoryTools` backed by ArangoDB graph storage (nodes/edges with embeddings on nodes).
+- `src/personal_assistant/mock_tools.py`: In-memory mocks for memory, calendar, tasks, contacts, and web.
 - `src/personal_assistant/task_queue.py`: Maintains prioritized task queue node in memory.
 - `src/personal_assistant/openai_client.py`: Thin wrapper around OpenAI chat/embeddings with a fake for tests.
 - `src/personal_assistant/prompts.py`: System/developer prompts that define the planning contract and tool catalog.
@@ -39,9 +43,11 @@ flowchart TB
 2) Set environment for OpenAI:
    - `export OPENAI_API_KEY=...`
    - optionally `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`).
-3) Run the demo:
-   - `python main.py` (uses Chroma at `.chroma/`; falls back to in-memory if unavailable).
-4) Run tests:
+3) Configure optional Arango memory:
+   - Set `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD` to enable Arango-backed memory.
+4) Run the demo:
+   - `python main.py` (order: Arango if env is set → Chroma at `.chroma/` → in-memory mock).
+5) Run tests:
    - `python -m pytest`
 
 ## Project History
@@ -54,3 +60,4 @@ flowchart TB
 - Swap mocks for real task/calendar backends and add persistence for non-embedding fields.
 - Harden Playwright/Appium paths with retries, logging, and timeouts.
 - Add a ChatGPT + Playwright flow that streams DOM HTML plus screenshot, then issues follow-up clicks/fills driven by LLM function calls.
+- Add native Arango vector indexes / AQL scoring to avoid client-side cosine when Arango is available.

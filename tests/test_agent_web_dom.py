@@ -2,7 +2,7 @@ import json
 import unittest
 
 from src.personal_assistant.agent import PersonalAssistantAgent
-from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockWebTools
+from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockWebTools, MockContactsTools
 from src.personal_assistant.openai_client import FakeOpenAIClient
 
 
@@ -27,6 +27,15 @@ class TestAgentWebDom(unittest.TestCase):
             notes="",
         )
         web = MockWebTools()
+        contacts = MockContactsTools()
+        contacts.create(
+            name="Jane Example",
+            emails=["jane@example.com"],
+            phones=[],
+            org="ExampleCo",
+            notes="",
+            tags=[],
+        )
         fake_plan = """
         {
           "intent": "web_io",
@@ -37,7 +46,14 @@ class TestAgentWebDom(unittest.TestCase):
         }
         """
         openai_client = FakeOpenAIClient(chat_response=fake_plan, embedding=[0.0, 0.0, 1.0])
-        agent = PersonalAssistantAgent(memory, calendar, tasks, web=web, openai_client=openai_client)
+        agent = PersonalAssistantAgent(
+            memory,
+            calendar,
+            tasks,
+            web=web,
+            contacts=contacts,
+            openai_client=openai_client,
+        )
 
         result = agent.execute_request("Inspect the login page and click submit")
 

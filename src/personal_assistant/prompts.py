@@ -21,9 +21,11 @@ Memory contract:
 - Write only on success/user approval: `memory.upsert(item, provenance, embedding_request?)`.
 - Object shapes: Node {uuid, kind, labels, props, llm_embedding?, status}; Edge {uuid, kind:"edge", from_node, to_node, rel, props}; Provenance {source:"user|tool|doc", ts, confidence, trace_id}.
 
- Tool catalog (choose minimal set):
+Tool catalog (choose minimal set):
 - tasks.create(title, due?, priority, notes, links[])
 - tasks.list(filters?)
+- contacts.create(name, emails[], phones[], org?, notes, tags[])
+- contacts.list(filters?)
 - calendar.list(date_range)
 - calendar.create_event(title, start, end, attendees[], location, notes)
 - memory.search(...) / memory.upsert(...)
