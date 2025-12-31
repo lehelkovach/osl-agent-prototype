@@ -26,6 +26,13 @@ class TestKSGSeed(unittest.TestCase):
         obj_nodes = [n for n in memory.nodes.values() if n.kind == "Object"]
         self.assertEqual(len(obj_nodes), len(DEFAULT_OBJECTS))
 
+        # Check inheritance edges for list/chain/dag
+        inherit_edges = [e for e in memory.edges.values() if e.rel == "inherits_from"]
+        self.assertGreaterEqual(len(inherit_edges), 2)
+        rels = {(e.props.get("child"), e.props.get("parent")) for e in inherit_edges}
+        self.assertIn(("Chain", "List"), rels)
+        self.assertIn(("DAG", "Chain"), rels)
+
 
 if __name__ == "__main__":
     unittest.main()

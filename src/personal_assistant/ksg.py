@@ -35,7 +35,16 @@ DEFAULT_PROTOTYPES = [
     "Document",
     "Device",
     "PreferenceRule",
+    "List",
+    "Chain",
+    "DAG",
 ]
+
+# Prototype inheritance mapping child -> parent
+PROTOTYPE_INHERITS = {
+    "Chain": "List",
+    "DAG": "Chain",
+}
 
 DEFAULT_OBJECTS = [
     {"name": "self", "kind": "Agent", "labels": ["seed", "agent"]},
@@ -94,6 +103,7 @@ class KSGStore:
             ensured["property_defs"].append(node.uuid)
 
         # Seed prototypes
+        proto_nodes: Dict[str, Node] = {}
         for proto in DEFAULT_PROTOTYPES:
             node = Node(
                 kind="Prototype",
@@ -107,6 +117,18 @@ class KSGStore:
                     node.llm_embedding = None
             self.memory.upsert(node, prov, embedding_request=True)
             ensured["prototypes"].append(node.uuid)
+            proto_nodes[proto] = node
+
+        # Link prototype inheritance edges
+        for child, parent in PROTOTYPE_INHERITS.items():
+            if child in proto_nodes and parent in proto_nodes:
+                self.add_assoc(
+                    from_uuid=proto_nodes[child].uuid,
+                    to_uuid=proto_nodes[parent].uuid,
+                    rel="inherits_from",
+                    props={"child": child, "parent": parent},
+                    trace_id="ksg-proto-inherit",
+                )
 
         # Seed objects
         for obj in DEFAULT_OBJECTS:
