@@ -8,7 +8,7 @@ from src.personal_assistant.tools import MemoryTools
 DEFAULT_PROPERTY_DEFS = [
     {"prop": "name", "dtype": "text"},
     {"prop": "description", "dtype": "text"},
-    {"prop": "tags", "dtype": "list[text]"},
+    {"prop": "tags", "dtype": "list[ref(Tag)]"},
     {"prop": "createdAt", "dtype": "date"},
     {"prop": "updatedAt", "dtype": "date"},
     {"prop": "startAt", "dtype": "date"},
@@ -36,14 +36,15 @@ DEFAULT_PROTOTYPES = [
     "Device",
     "PreferenceRule",
     "List",
-    "Chain",
     "DAG",
+    "Tag",
+    "Queue",
 ]
 
 # Prototype inheritance mapping child -> parent
 PROTOTYPE_INHERITS = {
-    "Chain": "List",
-    "DAG": "Chain",
+    "DAG": "List",
+    "Queue": "List",
 }
 
 DEFAULT_OBJECTS = [
@@ -51,6 +52,7 @@ DEFAULT_OBJECTS = [
     {"name": "assistant", "kind": "Agent", "labels": ["seed", "agent"]},
     {"name": "home", "kind": "Place", "labels": ["seed", "place"]},
     {"name": "work", "kind": "Place", "labels": ["seed", "place"]},
+    {"name": "language:en", "kind": "Language", "labels": ["seed", "language"]},
 ]
 
 
@@ -142,3 +144,41 @@ class KSGStore:
             ensured["objects"].append(node.uuid)
 
         return ensured
+
+    def add_tag(
+        self,
+        concept_uuid: str,
+        tag_name: str,
+        language: str = "language:en",
+        weight: float = 1.0,
+        embedding_fn=None,
+    ) -> str:
+        prov = self._prov("ksg-tag")
+        tag_node = Node(
+            kind="Tag",
+            labels=["Tag"],
+            props={"name": tag_name, "language": language},
+        )
+        try:
+            tag_node.llm_embedding = embedding_fn(tag_name) if embedding_fn else None
+        except Exception:
+            tag_node.llm_embedding = None
+        self.memory.upsert(tag_node, prov, embedding_request=True)
+        edge = Edge(
+            from_node=concept_uuid,
+            to_node=tag_node.uuid,
+            rel="has_tag",
+            props={"w": weight},
+        )
+        self.memory.upsert(edge, prov, embedding_request=False)
+        # Link tag -> language object if present
+        lang_nodes = [n for n in getattr(self.memory, "nodes", {}).values() if n.props.get("name") == language]
+        if lang_nodes:
+            lang_edge = Edge(
+                from_node=tag_node.uuid,
+                to_node=lang_nodes[0].uuid,
+                rel="is_a",
+                props={"kind": "Language"},
+            )
+            self.memory.upsert(lang_edge, prov, embedding_request=False)
+        return tag_node.uuid

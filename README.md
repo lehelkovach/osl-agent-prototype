@@ -1,74 +1,74 @@
 # OSL Agent Prototype
 
-Lightweight personal assistant agent that plans with OpenAI, executes tool calls (tasks, calendar, contacts, web), and persists semantic memory in ChromaDB or ArangoDB.
+Lightweight personal assistant agent that plans with OpenAI, executes tool calls (tasks, calendar, contacts, web, shell), and persists semantic memory in ChromaDB or ArangoDB with a small KnowShowGo (KSG) ontology.
 
 ## Purpose & Goals
-- Build a loop that classifies intent, searches memory, plans with an LLM, executes tool calls, and writes back results.
-- Maintain a semantic knowledge base so new tasks/events are queryable via embeddings (Chroma-backed RAG).
-- Keep implementations swappable (mock vs. real) for fast iteration and testing.
-- Enable web interaction via DOM fetch + screenshots for downstream vision-guided actions (clicks, fills).
+- Run a loop that classifies intent, searches semantic memory, plans with an LLM, executes tool calls, and writes back results.
+- Keep knowledge in a graph + embeddings store (Arango/Chroma) with seeded prototypes (Task, Event, DAG, List, Tag, etc.) for reuse and RAG.
+- Support asynchronous-style event emission, task queueing, and time-based rules (scheduler) so the agent can react to conditions.
+- Provide web/vision hooks (DOM HTML + screenshot + bounding-box queries) and shell commandlets for automation planning.
+- Keep implementations swappable (mock vs. real) for fast iteration and testing; expose a simple HTTP UI for chat + logs.
 
 ## Architecture
 ```mermaid
 flowchart TB
-    User["User request"] --> Agent
-    Agent["PersonalAssistantAgent (planning & execution)"] -->|LLM chat/embeddings| OpenAI
-    Agent -->|memory.search / upsert| Chroma["ChromaDB (semantic memory)"]
-    Agent -->|memory.search / upsert| Arango["ArangoDB (graph + embeddings)"]
+    User --> Service["FastAPI Service / CLI"]
+    Service --> Agent["PersonalAssistantAgent\n(plan + execute)"]
+    Agent -->|LLM chat/embeddings| OpenAI
+    Agent --> Memory["MemoryTools (ArangoDB/ChromaDB)"]
+    Memory --> KSG["KnowShowGo Store\n(seeds prototypes/tags)"]
     Agent --> Queue["TaskQueueManager"]
-    Agent --> Tasks["TaskTools (mock)"]
-    Agent --> Calendar["CalendarTools (mock)"]
-    Agent --> Contacts["ContactsTools (mock)"]
-    Agent --> Web["WebTools (Playwright/Appium)"]
-    Agent --> Events["EventBus (emits lifecycle/tool/memory events)"]
-    Agent --> VersionedDocs["VersionedDocumentStore (versions + embeddings)"]
-    Agent --> Ontology["Ontology Init (Prototypes: Person, Event, Procedure, DAG)"]
-    Queue --> Chroma
-    Queue --> Arango
-    VersionedDocs --> Chroma
-    VersionedDocs --> Arango
+    Agent --> Scheduler["Scheduler (time rules)"]
+    Scheduler --> Queue
+    Agent --> Tasks["Task/Calendar/Contacts Tools"]
+    Agent --> Web["WebTools\n(DOM fetch + screenshot)"]
+    Agent --> Shell["ShellTools (staged)"]
+    Agent --> Docs["VersionedDocumentStore"]
+    Agent --> Events["EventBus"]
+    Events --> Logs["Logging + history streams"]
+    Service --> UI["/ui chat + log view"]
 ```
 
 ## Components
-- `src/personal_assistant/agent.py`: Core loop (intent classify → memory search → LLM JSON plan → tool execution → memory upserts + queue enqueue).
-- `src/personal_assistant/chroma_memory.py`: `MemoryTools` backed by ChromaDB persistent store (`.chroma/` by default).
-- `src/personal_assistant/arango_memory.py`: `MemoryTools` backed by ArangoDB graph storage (nodes/edges with embeddings on nodes).
-- `src/personal_assistant/mock_tools.py`: In-memory mocks for memory, calendar, tasks, contacts, and web.
-- `src/personal_assistant/task_queue.py`: Maintains prioritized task queue node in memory.
-- `src/personal_assistant/ontology_init.py`: Seeds default prototypes (Person, Event, Procedure, DAG) into memory.
-- `src/personal_assistant/versioned_document.py`: Versioned JSON metadata store with embeddings, links to concepts and version chains.
-- `src/personal_assistant/openai_client.py`: Thin wrapper around OpenAI chat/embeddings with a fake for tests.
-- `src/personal_assistant/prompts.py`: System/developer prompts that define the planning contract and tool catalog.
-- `src/personal_assistant/web_tools.py`: Playwright-backed primitive web commandlets including DOM fetch + screenshot for vision and selector/xpath/coordinate clicks.
-- `src/personal_assistant/service.py`: FastAPI service wrapper exposing `/health` and `/chat` (returns plan, results, and emitted events).
-- `main.py`: Demo entrypoint wiring the agent with Chroma memory (fallback to mock if Chroma fails).
-- `tests/`: Unit and integration coverage for models, mocks, task queue, and the agent’s happy path.
+- `src/personal_assistant/agent.py`: Core loop (intent → memory search → LLM JSON plan → tool execution → memory upserts + queue enqueue).
+- `src/personal_assistant/chroma_memory.py` / `arango_memory.py`: `MemoryTools` backed by ChromaDB or ArangoDB (graph + embeddings).
+- `src/personal_assistant/ksg.py`: Minimal KSG store that seeds property defs, prototypes (List, DAG, Tag, etc.), and seed objects (self/assistant/home/work/language).
+- `src/personal_assistant/task_queue.py`: Prioritized queue with enqueue/update operations that also persist to memory.
+- `src/personal_assistant/scheduler.py`: Time-rule evaluator that enqueues tasks (optionally with DAG payloads) and persists them with embeddings.
+- `src/personal_assistant/versioned_document.py`: Versioned JSON metadata store linked to concepts with embeddings and version chains.
+- `src/personal_assistant/web_tools.py`: DOM fetch + screenshot + (mocked) bounding-box locator for vision-guided clicks/xpaths.
+- `src/personal_assistant/prompts.py`: System/developer prompts that define the planning contract and tool catalog (tasks, calendar, contacts, web, shell, queue).
+- `src/personal_assistant/service.py`: FastAPI service exposing `/health`, `/chat`, `/history`, `/logs`, and a lightweight `/ui` for chat + log viewing.
+- `src/personal_assistant/logging_setup.py`: Structured logging configured for console and JSON log streaming to the service.
+- `src/personal_assistant/tools.py`, `mock_tools.py`: Abstract tool interfaces + in-memory mocks for fast testing.
+- `main.py`: Demo entrypoint that prefers Arango, then Chroma, then in-memory mock.
 
 ## Setup
-1) Install dependencies (use Poetry or pip):
-   - `pip install -r requirements.txt`
-   - or `poetry install`
-2) Set environment for OpenAI (e.g., in `.env.local`):
-   - `OPENAI_API_KEY=...`
-   - optionally `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`).
-3) Configure optional Arango memory:
-   - Set `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD` to enable Arango-backed memory.
-   - If using a custom CA (e.g., ArangoDB Cloud), set `ARANGO_VERIFY` to the CA path (do not commit certs); set to `false` only for local/self-signed dev.
-4) Run the demo:
-   - `python main.py` (order: Arango if env is set → Chroma at `.chroma/` → in-memory mock).
-5) Run tests:
-   - `python -m pytest`
-6) Run the HTTP service (FastAPI):
-   - `uvicorn src.personal_assistant.service:build_app --factory --reload`
+1) Install dependencies (Poetry or pip):
+   - `pip install -r requirements.txt` or `poetry install`
+2) Environment (put these in `.env.local` — no quotes):
+   - `OPENAI_API_KEY=your-key`
+   - optional `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`)
+3) Optional Arango memory:
+   - `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`
+   - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev.
+4) Run the demo: `python main.py` (prefers Arango → Chroma at `.chroma/` → in-memory mock).
+5) Run tests: `pytest` (a conftest pins the repo root on `sys.path`; 33 passing, 2 skipped in CI-like runs).
+6) Run the HTTP service: `uvicorn src.personal_assistant.service:main --reload` or `poetry run agent-service`.
 
-## Project History
-- Phase 1: In-memory mock tools and OpenAI wrapper with prompts + integration test harness.
-- Phase 2 (current): Added ChromaDB-backed semantic memory and repository scaffolding (git + ignore rules).
+## Current State
+- Agent loop exercises tasks/calendar/contacts/web tools with mock backends and logs lifecycle events via an event bus.
+- Semantic memory can be Arango or Chroma; KSG seeds property defs, prototypes (List/DAG/Tag) and seed objects, plus tag helper linking to language.
+- Time-based scheduler enqueues tasks with optional DAG payloads and writes embeddings.
+- Shell commandlet exists (mocked execution for now) and is exposed in the prompt/tool registry.
+- Web DOM fetch + screenshot + bounding-box locator (locator currently mocked; Playwright stub raises NotImplemented).
+- FastAPI service streams chat history and event logs; lightweight `/ui` renders chat + log panes.
+- Versioned document store and task queue updater have unit coverage; service and agent have integration tests.
 
-## Next Up
-- Add `queue.update` tool support to align with the prompt contract.
-- Expand integration tests (calendar/web flows, failure handling, malformed LLM plans).
-- Swap mocks for real task/calendar backends and add persistence for non-embedding fields.
-- Harden Playwright/Appium paths with retries, logging, and timeouts.
-- Add a ChatGPT + Playwright flow that streams DOM HTML plus screenshot, then issues follow-up clicks/fills driven by LLM function calls.
-- Add native Arango vector indexes / AQL scoring to avoid client-side cosine when Arango is available.
+## Known Gaps / Next Steps
+- Promote the shell commandlet from mock to a real sandboxed executor with staging/confirmation.
+- Flesh out Playwright/Appium flows (HTML + screenshot + vision queries + click/fill) and add end-to-end coverage.
+- Push more logic into KSG: materialize more property defs/prototypes (Contact/Message/PreferenceRule), cache flattening, and Arango vector indexes.
+- Persist event/log streams to storage and broaden the UI to show live streams + memory/task views.
+- Add richer RAG prompts so the agent can synthesize/reuse stored DAG procedures (e.g., LinkedIn recruiter workflows) and learn from prior embeddings.
+- Split the KSG module into its own package when ready (per goal of carving it into a subproject).
