@@ -41,6 +41,7 @@ flowchart TB
 - `src/personal_assistant/service.py`: FastAPI service exposing `/health`, `/chat`, `/history`, `/logs`, and a lightweight `/ui` for chat + log viewing.
 - `src/personal_assistant/logging_setup.py`: Structured logging configured for console and JSON log streaming to the service.
 - `src/personal_assistant/tools.py`, `mock_tools.py`: Abstract tool interfaces + in-memory mocks for fast testing.
+- `src/personal_assistant/cpms_adapter.py`: Thin wrapper around the published `cpms-client` package (no local cpms repo needed).
 - `main.py`: Demo entrypoint that prefers Arango, then Chroma, then in-memory mock.
 
 ## Setup
