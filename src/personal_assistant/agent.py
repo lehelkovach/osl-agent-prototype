@@ -9,6 +9,8 @@ from src.personal_assistant.models import Node, Provenance
 from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
 from src.personal_assistant.task_queue import TaskQueueManager
 from src.personal_assistant.events import EventBus, NullEventBus
+from src.personal_assistant.cpms_adapter import CPMSAdapter
+from src.personal_assistant.procedure_builder import ProcedureBuilder
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -21,6 +23,8 @@ class PersonalAssistantAgent:
         web: Optional[WebTools] = None,
         contacts: Optional["ContactsTools"] = None,
         shell: Optional[ShellTools] = None,
+        cpms: Optional[CPMSAdapter] = None,
+        procedure_builder: Optional[ProcedureBuilder] = None,
         openai_client: Optional[OpenAIClient] = None,
         event_bus: Optional[EventBus] = None,
     ):
@@ -30,6 +34,8 @@ class PersonalAssistantAgent:
         self.web = web
         self.contacts = contacts
         self.shell = shell
+        self.cpms = cpms
+        self.procedure_builder = procedure_builder
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
         self.openai_client: OpenAIClient = openai_client or OpenAIClient()
@@ -266,6 +272,54 @@ class PersonalAssistantAgent:
                         "items": queue.props.get("items", []),
                     },
                 )
+            elif tool_name == "memory.remember":
+                res = self._remember_fact(params, provenance)
+                results.append(res)
+            elif tool_name == "cpms.create_procedure":
+                if not self.cpms:
+                    res = {"status": "error", "error": "CPMS adapter not configured"}
+                else:
+                    res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
+                results.append(res)
+            elif tool_name == "cpms.list_procedures":
+                if not self.cpms:
+                    res = {"status": "error", "error": "CPMS adapter not configured"}
+                else:
+                    res = {"status": "success", "procedures": self.cpms.list_procedures()}
+                results.append(res)
+            elif tool_name == "cpms.get_procedure":
+                if not self.cpms:
+                    res = {"status": "error", "error": "CPMS adapter not configured"}
+                else:
+                    res = {"status": "success", "procedure": self.cpms.get_procedure(**params)}
+                results.append(res)
+            elif tool_name == "cpms.create_task":
+                if not self.cpms:
+                    res = {"status": "error", "error": "CPMS adapter not configured"}
+                else:
+                    res = {"status": "success", "task": self.cpms.create_task(**params)}
+                results.append(res)
+            elif tool_name == "cpms.list_tasks":
+                if not self.cpms:
+                    res = {"status": "error", "error": "CPMS adapter not configured"}
+                else:
+                    res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
+                results.append(res)
+            elif tool_name == "procedure.create":
+                if not self.procedure_builder:
+                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                else:
+                    res = {
+                        "status": "success",
+                        "procedure": self.procedure_builder.create_procedure(**params),
+                    }
+                results.append(res)
+            elif tool_name == "procedure.search":
+                if not self.procedure_builder:
+                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                else:
+                    res = {"status": "success", "procedures": self.procedure_builder.search_procedures(**params)}
+                results.append(res)
             else:
                 results.append({"status": "no action taken", "tool": tool_name})
             # Emit tool invocation event with params and result
@@ -284,6 +338,27 @@ class PersonalAssistantAgent:
 
     def _task_to_node(self, task_data: Dict[str, Any]) -> Node:
         return Node(kind="Task", labels=[task_data.get("title", "task")], props=task_data)
+
+    def _remember_fact(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Store a fact/claim as a concept node with an embedding, suitable for later RAG.
+        params: {"text": str, "kind": optional str, "labels": optional list[str], "props": optional dict}
+        """
+        text = params.get("text") or params.get("content") or ""
+        if not text:
+            return {"status": "error", "error": "text required"}
+        kind = params.get("kind", "Concept")
+        labels = params.get("labels", ["fact"])
+        extra_props = params.get("props", {})
+        node = Node(
+            kind=kind,
+            labels=labels,
+            props={"content": text, **extra_props},
+        )
+        node.llm_embedding = self._embed_text(text)
+        self.memory.upsert(node, provenance, embedding_request=True)
+        self._emit_memory_upsert(node, provenance)
+        return {"status": "success", "uuid": node.uuid, "kind": node.kind}
 
     def _embed_text(self, text: str) -> Optional[List[float]]:
         if not text:

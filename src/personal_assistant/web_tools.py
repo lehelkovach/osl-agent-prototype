@@ -77,9 +77,20 @@ class PlaywrightWebTools(WebTools):
 
     def locate_bounding_box(self, url: str, query: str) -> Dict[str, Any]:
         """
-        Placeholder: requires a vision model to locate elements by description.
+        Locate element bounding box using the query as a selector or text locator.
+        Attempts CSS/XPath/text lookup; returns first match bounding box.
         """
-        raise NotImplementedError("locate_bounding_box requires a vision-enabled implementation.")
+        def action(page, u):
+            response = page.goto(u)
+            locator = page.locator(query)
+            if locator.count() == 0:
+                locator = page.get_by_text(query)
+            box = locator.first.bounding_box()
+            if not box:
+                return {"status": 404, "url": u, "query": query, "bbox": None}
+            return {"status": response.status if response else 0, "url": u, "query": query, "bbox": box}
+
+        return self._with_page(url, action)
 
     def click_xy(self, url: str, x: int, y: int) -> Dict[str, Any]:
         def action(page, u):

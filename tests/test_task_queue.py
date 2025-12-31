@@ -9,7 +9,7 @@ from src.personal_assistant.task_queue import TaskQueueManager
 class TestTaskQueue(unittest.TestCase):
     def setUp(self):
         self.memory = MockMemoryTools()
-        self.queue_manager = TaskQueueManager(self.memory)
+        self.queue_manager = TaskQueueManager(self.memory, embed_fn=lambda text: [float(len(text)), 0.1])
         self.provenance = Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace-queue")
 
     def test_enqueue_and_sort(self):
@@ -40,6 +40,24 @@ class TestTaskQueue(unittest.TestCase):
         self.assertEqual(items[0]["task_uuid"], task_b.uuid)
         self.assertEqual(items[0]["priority"], 1)
         self.assertEqual(items[0]["status"], "in-progress")
+
+    def test_queue_embedding_and_kind(self):
+        queue = self.queue_manager.ensure_queue(self.provenance)
+        self.assertEqual(queue.kind, "Queue")
+        self.assertIsNotNone(queue.llm_embedding)
+
+    def test_enqueue_node_and_dequeue_with_edge(self):
+        node = Node(kind="Procedure", labels=["proc"], props={"title": "My Proc"})
+        queue = self.queue_manager.enqueue_node(node, self.provenance, priority=5)
+        self.assertEqual(queue.props["items"][0]["task_uuid"], node.uuid)
+        # Edge from queue to node should exist
+        edges = list(self.memory.edges.values())
+        self.assertTrue(any(e.from_node == queue.uuid and e.to_node == node.uuid and e.rel == "contains" for e in edges))
+        # Dequeue returns the same item and removes it
+        item = self.queue_manager.dequeue(self.provenance)
+        self.assertEqual(item["task_uuid"], node.uuid)
+        queue_after = self.queue_manager.ensure_queue(self.provenance)
+        self.assertEqual(queue_after.props["items"], [])
 
 
 if __name__ == "__main__":

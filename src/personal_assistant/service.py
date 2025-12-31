@@ -11,6 +11,9 @@ from src.personal_assistant.agent import PersonalAssistantAgent
 from src.personal_assistant.events import EventBus
 from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockContactsTools
 from dotenv import load_dotenv
+from src.personal_assistant.procedure_builder import ProcedureBuilder
+from src.personal_assistant.cpms_adapter import CPMSAdapter, CPMSNotInstalled
+from src.personal_assistant.openai_client import OpenAIClient
 
 
 class ChatRequest(BaseModel):
@@ -138,7 +141,33 @@ def default_agent_from_env() -> PersonalAssistantAgent:
     calendar = MockCalendarTools()
     tasks = MockTaskTools()
     contacts = MockContactsTools()
-    return PersonalAssistantAgent(memory, calendar, tasks, contacts=contacts)
+    # Use OpenAI embeddings if available; fall back to a no-op embedding to avoid failures.
+    try:
+        openai_client = OpenAIClient()
+        def _embed(text: str):
+            try:
+                return openai_client.embed(text)
+            except Exception:
+                return None
+    except Exception:
+        openai_client = None
+        _embed = lambda text: None
+
+    procedure_builder = ProcedureBuilder(memory, embed_fn=_embed)
+    cpms_adapter = None
+    try:
+        cpms_adapter = CPMSAdapter.from_env()
+    except CPMSNotInstalled:
+        cpms_adapter = None
+    return PersonalAssistantAgent(
+        memory,
+        calendar,
+        tasks,
+        contacts=contacts,
+        procedure_builder=procedure_builder,
+        cpms=cpms_adapter,
+        openai_client=openai_client,
+    )
 
 
 def main():

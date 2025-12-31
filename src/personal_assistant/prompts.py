@@ -21,7 +21,7 @@ Memory contract:
 - Write only on success/user approval: `memory.upsert(item, provenance, embedding_request?)`.
 - Object shapes: Node {uuid, kind, labels, props, llm_embedding?, status}; Edge {uuid, kind:"edge", from_node, to_node, rel, props}; Provenance {source:"user|tool|doc", ts, confidence, trace_id}.
 
- Tool catalog (choose minimal set):
+Tool catalog (choose minimal set):
 - tasks.create(title, due?, priority, notes, links[])
 - tasks.list(filters?)
 - contacts.create(name, emails[], phones[], org?, notes, tags[])
@@ -29,13 +29,18 @@ Memory contract:
 - calendar.list(date_range)
 - calendar.create_event(title, start, end, attendees[], location, notes)
 - memory.search(...) / memory.upsert(...)
+- memory.remember(text, kind?, labels?, props?)  # store a fact/procedure/concept with embedding
 - web.get(url), web.post(url, payload), web.screenshot(url), web.get_dom(url)  # primitive commandlets for HTTP/DOM/screenshot
 - web.locate_bounding_box(url, query)  # vision-assisted lookup of element bounding boxes
 - web.click_selector(url, selector) / web.click_xpath(url, xpath) / web.click_xy(url, x, y)
 - queue.update(items[])  # reorder/prioritize task queue items (uuid, priority, due, status)
 - shell.run(command, dry_run?)  # stage shell commands; dry_run true before execution unless user-approved
+- cpms.create_procedure(name, description, steps[]) / cpms.list_procedures() / cpms.get_procedure(procedure_id)
+- cpms.create_task(procedure_id, title, payload) / cpms.list_tasks(procedure_id?)
+- procedure.create(title, description, steps[], dependencies?, guards?)  # persist Procedure/Step DAG with embeddings
+- procedure.search(query, top_k?)  # retrieve similar procedures by embedding/text
 
- Web inspection policy:
+Web inspection policy:
 - Use web.get_dom(url) when you need DOM HTML and a screenshot for vision-based reasoning, then follow up with web.click_* or web.fill actions as needed.
 
 Workflow:

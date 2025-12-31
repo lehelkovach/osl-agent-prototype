@@ -32,6 +32,7 @@ class TestKSGSeed(unittest.TestCase):
         rels = {(e.props.get("child"), e.props.get("parent")) for e in inherit_edges}
         self.assertIn(("DAG", "List"), rels)
         self.assertIn(("Queue", "List"), rels)
+        self.assertIn(("Procedure", "DAG"), rels)
 
     def test_seed_sets_embeddings_and_tag_embedding(self):
         memory = MockMemoryTools()

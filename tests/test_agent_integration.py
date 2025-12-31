@@ -164,6 +164,74 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertEqual(queue.props["items"][0]["priority"], 1)
         self.assertEqual(queue.props["items"][0]["status"], "in-progress")
 
+    def test_linkedin_check_procedure_executes_with_memory(self):
+        """Simulate a LinkedIn message check that uses web tools, remembers a procedure, and creates a task."""
+        memory = MockMemoryTools()
+        calendar = MockCalendarTools()
+        tasks = MockTaskTools()
+        web = MockWebTools()
+        contacts = MockContactsTools()
+
+        plan = """
+        {
+          "intent": "task",
+          "steps": [
+            {
+              "tool": "memory.remember",
+              "params": {
+                "text": "Procedure: check LinkedIn messages for recruiter outreach and create follow-up reminders",
+                "kind": "Procedure",
+                "labels": ["procedure", "linkedin"]
+              }
+            },
+            {
+              "tool": "web.get",
+              "params": {"url": "https://linkedin.com/messages"}
+            },
+            {
+              "tool": "web.locate_bounding_box",
+              "params": {"url": "https://linkedin.com/messages", "query": "recruiter message"}
+            },
+            {
+              "tool": "tasks.create",
+              "params": {
+                "title": "follow up on LinkedIn recruiter messages",
+                "due": null,
+                "priority": 2,
+                "notes": "Auto-created from LinkedIn scan",
+                "links": []
+              }
+            }
+          ]
+        }
+        """
+        embed_vec = [0.7, 0.1, 0.1]
+        agent = PersonalAssistantAgent(
+            memory,
+            calendar,
+            tasks,
+            web=web,
+            contacts=contacts,
+            openai_client=FakeOpenAIClient(chat_response=plan, embedding=embed_vec),
+        )
+
+        result = agent.execute_request("check my LinkedIn messages for recruiters")
+
+        self.assertEqual(result["execution_results"]["status"], "completed")
+        # Web actions executed
+        methods = [h["method"] for h in web.history]
+        self.assertIn("GET", methods)
+        self.assertIn("LOCATE_BBOX", methods)
+        # Task created and stored with embedding
+        self.assertEqual(len(tasks.tasks), 1)
+        task_nodes = [n for n in memory.nodes.values() if n.kind == "Task"]
+        self.assertEqual(len(task_nodes), 1)
+        self.assertEqual(task_nodes[0].llm_embedding, embed_vec)
+        # Procedure remembered with embedding
+        proc_nodes = [n for n in memory.nodes.values() if n.kind == "Procedure"]
+        self.assertEqual(len(proc_nodes), 1)
+        self.assertEqual(proc_nodes[0].llm_embedding, embed_vec)
+
 
 if __name__ == '__main__':
     unittest.main()

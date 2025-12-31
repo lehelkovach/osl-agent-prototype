@@ -1,6 +1,12 @@
 import logging
 import structlog
-from pythonjsonlogger import jsonlogger
+try:
+    # Newer import path per deprecation notice
+    from pythonjsonlogger import json
+    JsonFormatter = json.JsonFormatter
+except Exception:
+    from pythonjsonlogger import jsonlogger
+    JsonFormatter = jsonlogger.JsonFormatter
 
 
 def configure_logging():
@@ -8,7 +14,7 @@ def configure_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
     handler = logging.StreamHandler()
-    formatter = jsonlogger.JsonFormatter()
+    formatter = JsonFormatter()
     handler.setFormatter(formatter)
     logger.handlers = [handler]
 

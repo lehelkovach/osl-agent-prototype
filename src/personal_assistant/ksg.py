@@ -39,12 +39,15 @@ DEFAULT_PROTOTYPES = [
     "DAG",
     "Tag",
     "Queue",
+    "Procedure",
+    "Step",
 ]
 
 # Prototype inheritance mapping child -> parent
 PROTOTYPE_INHERITS = {
     "DAG": "List",
     "Queue": "List",
+    "Procedure": "DAG",
 }
 
 DEFAULT_OBJECTS = [
