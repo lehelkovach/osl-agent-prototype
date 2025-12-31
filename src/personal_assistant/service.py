@@ -13,7 +13,8 @@ from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools
 from dotenv import load_dotenv
 from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.cpms_adapter import CPMSAdapter, CPMSNotInstalled
-from src.personal_assistant.openai_client import OpenAIClient
+from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
+from src.personal_assistant.local_embedder import LocalEmbedder
 
 
 class ChatRequest(BaseModel):
@@ -224,11 +225,21 @@ def default_agent_from_env() -> PersonalAssistantAgent:
     calendar = MockCalendarTools()
     tasks = MockTaskTools()
     contacts = MockContactsTools()
-    # Use OpenAI embeddings if available; fall back to a no-op embedding to avoid failures.
+    # Use OpenAI embeddings if available; allow forcing fake client via USE_FAKE_OPENAI.
+    use_fake = os.getenv("USE_FAKE_OPENAI") == "1"
+    use_local_embed = os.getenv("EMBEDDING_BACKEND", "").lower() == "local"
+    local_embedder = LocalEmbedder() if use_local_embed else None
     try:
-        openai_client = OpenAIClient()
+        if use_fake:
+            openai_client = FakeOpenAIClient(chat_response="Hi", embedding=[0.0, 0.0, 0.0])
+        elif use_local_embed:
+            openai_client = OpenAIClient()  # keep chat via OpenAI unless also disabled
+        else:
+            openai_client = OpenAIClient()
         def _embed(text: str):
             try:
+                if local_embedder:
+                    return local_embedder.embed(text)
                 return openai_client.embed(text)
             except Exception:
                 return None

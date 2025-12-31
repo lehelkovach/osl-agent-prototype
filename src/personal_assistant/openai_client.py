@@ -23,16 +23,33 @@ class OpenAIClient:
         )
 
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
-        response = self.client.chat.completions.create(
-            model=self.chat_model, messages=messages, temperature=temperature
-        )
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=self.chat_model, messages=messages, temperature=temperature
+            )
+            return response.choices[0].message.content
+        except Exception as exc:
+            # Surface headers/status if available
+            err_data = getattr(exc, "response", None)
+            meta = {}
+            if err_data is not None:
+                meta["status"] = getattr(err_data, "status_code", None)
+                meta["headers"] = dict(getattr(err_data, "headers", {}) or {})
+            raise RuntimeError(f"OpenAI chat failed: {exc} meta={meta}") from exc
 
     def embed(self, text: str) -> List[float]:
-        response = self.client.embeddings.create(
-            model=self.embedding_model, input=text
-        )
-        return response.data[0].embedding
+        try:
+            response = self.client.embeddings.create(
+                model=self.embedding_model, input=text
+            )
+            return response.data[0].embedding
+        except Exception as exc:
+            err_data = getattr(exc, "response", None)
+            meta = {}
+            if err_data is not None:
+                meta["status"] = getattr(err_data, "status_code", None)
+                meta["headers"] = dict(getattr(err_data, "headers", {}) or {})
+            raise RuntimeError(f"OpenAI embed failed: {exc} meta={meta}") from exc
 
 
 class FakeOpenAIClient:

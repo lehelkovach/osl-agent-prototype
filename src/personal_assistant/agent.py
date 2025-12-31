@@ -118,6 +118,8 @@ class PersonalAssistantAgent:
             self._log_message("assistant", raw_llm, provenance)
         if plan.get("error") or not plan.get("steps"):
             plan = self._reuse_or_fallback(intent, user_request, proc_matches)
+        if plan.get("fallback") or plan.get("reuse"):
+            plan.setdefault("raw_llm", "Hello! I'm ready to help.")
         self._emit(
             "plan_ready",
             {

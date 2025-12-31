@@ -45,6 +45,7 @@ class TestServiceUIChatFlow(unittest.TestCase):
         self.assertEqual(history[-2]["content"], "hello")
         self.assertEqual(history[-1]["role"], "assistant")
         self.assertTrue(history[-1]["content"])
+        self.assertIn("Hello", history[-1]["content"])
 
         logs = client.get("/logs").json()
         self.assertIsInstance(logs, list)
