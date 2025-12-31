@@ -2,6 +2,7 @@ import json
 import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from src.personal_assistant.prompts import SYSTEM_PROMPT, DEVELOPER_PROMPT
 from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ShellTools
@@ -11,6 +12,7 @@ from src.personal_assistant.task_queue import TaskQueueManager
 from src.personal_assistant.events import EventBus, NullEventBus
 from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
+from src.personal_assistant.form_filler import FormDataRetriever
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -39,18 +41,21 @@ class PersonalAssistantAgent:
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
         self.openai_client: OpenAIClient = openai_client or OpenAIClient()
-        self.queue_manager = TaskQueueManager(memory)
+        self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text)
         self.event_bus: EventBus = event_bus or NullEventBus()
+        self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
+        self.form_retriever = FormDataRetriever(memory)
 
     def execute_request(self, user_request: str) -> Dict[str, Any]:
         """
         Executes a user request by following the defined workflow.
         """
+        trace_id = f"agent-{uuid4()}"
         provenance = Provenance(
             source="user",
             ts=datetime.now(timezone.utc).isoformat(),
             confidence=1.0,
-            trace_id="agent-trace-1",
+            trace_id=trace_id,
         )
 
         # 0. Log user message into history
@@ -65,6 +70,21 @@ class PersonalAssistantAgent:
         memory_results = self.memory.search(
             user_request, top_k=5, query_embedding=query_embedding
         )
+        # Procedure reuse (embedding-aware)
+        if self.procedure_builder:
+            proc_matches = self.procedure_builder.search_procedures(user_request, top_k=3)
+            self._last_procedure_matches = proc_matches
+            memory_results.extend(proc_matches)
+            self._emit(
+                "procedure_recall",
+                {
+                    "query": user_request,
+                    "matches": proc_matches,
+                    "trace_id": provenance.trace_id,
+                },
+            )
+        else:
+            proc_matches = []
         self._emit(
             "rag_query",
             {
@@ -73,6 +93,7 @@ class PersonalAssistantAgent:
                 "has_embedding": query_embedding is not None,
                 "results_count": len(memory_results),
                 "trace_id": provenance.trace_id,
+                "ts": provenance.ts,
             },
         )
         tasks_context = self.tasks.list() if self.tasks else []
@@ -91,13 +112,12 @@ class PersonalAssistantAgent:
             tasks_context,
             calendar_context,
             contacts_context,
+            proc_matches,
         )
         if raw_llm:
             self._log_message("assistant", raw_llm, provenance)
         if plan.get("error") or not plan.get("steps"):
-            fallback = self._fallback_plan(intent, user_request)
-            if fallback:
-                plan = fallback
+            plan = self._reuse_or_fallback(intent, user_request, proc_matches)
         self._emit(
             "plan_ready",
             {
@@ -116,6 +136,10 @@ class PersonalAssistantAgent:
         )
 
         # 5. Write Back (already handled per tool)
+        # Attach trace_id for downstream consumers
+        plan["trace_id"] = provenance.trace_id
+        if isinstance(execution_results, dict):
+            execution_results.setdefault("trace_id", provenance.trace_id)
         return {"plan": plan, "execution_results": execution_results}
 
     def _classify_intent(self, user_request: str) -> str:
@@ -137,6 +161,7 @@ class PersonalAssistantAgent:
         tasks_context: list,
         calendar_context: list,
         contacts_context: list,
+        procedure_matches: list,
     ) -> (Dict[str, Any], Optional[str]):
         """Generates a plan by calling the LLM for structured JSON. Returns plan and raw LLM text."""
         messages = [
@@ -145,6 +170,7 @@ class PersonalAssistantAgent:
             {"role": "user", "content": f"User request: {user_request}"},
             {"role": "user", "content": f"Intent: {intent}"},
             {"role": "user", "content": f"Memory results: {json.dumps(memory_results)}"},
+            {"role": "user", "content": f"Procedure matches: {json.dumps(procedure_matches)}"},
             {"role": "user", "content": f"Tasks context: {json.dumps(tasks_context)}"},
             {
                 "role": "user",
@@ -161,7 +187,9 @@ class PersonalAssistantAgent:
         ]
         try:
             llm_text = self.openai_client.chat(messages, temperature=0.0)
-            return json.loads(llm_text), llm_text
+            plan_obj = json.loads(llm_text)
+            plan_obj["raw_llm"] = llm_text
+            return plan_obj, llm_text
         except Exception as e:
             llm_text = locals().get("llm_text", None)
             return {"intent": intent, "steps": [], "error": str(e)}, llm_text
@@ -172,6 +200,15 @@ class PersonalAssistantAgent:
         for step in plan.get("steps", []):
             tool_name = step.get("tool")
             params = step.get("params", {})
+            self._emit(
+                "tool_start",
+                {
+                    "tool": tool_name,
+                    "params": params,
+                    "trace_id": provenance.trace_id,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                },
+            )
             if tool_name == "tasks.create":
                 res = self.tasks.create(**params)
                 if res.get("status") == "success" and "task" in res:
@@ -320,6 +357,9 @@ class PersonalAssistantAgent:
                 else:
                     res = {"status": "success", "procedures": self.procedure_builder.search_procedures(**params)}
                 results.append(res)
+            elif tool_name == "form.autofill":
+                res = self._autofill_form(params)
+                results.append(res)
             else:
                 results.append({"status": "no action taken", "tool": tool_name})
             # Emit tool invocation event with params and result
@@ -330,6 +370,7 @@ class PersonalAssistantAgent:
                     "params": params,
                     "result": results[-1] if results else {"status": "no action taken"},
                     "trace_id": provenance.trace_id,
+                    "ts": datetime.now(timezone.utc).isoformat(),
                 },
             )
         if not results:
@@ -359,6 +400,26 @@ class PersonalAssistantAgent:
         self.memory.upsert(node, provenance, embedding_request=True)
         self._emit_memory_upsert(node, provenance)
         return {"status": "success", "uuid": node.uuid, "kind": node.kind}
+
+    def _autofill_form(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Autofill a form using stored FormData/Identity/Credential/PaymentMethod concepts.
+        params: {"url": str, "selectors": {field: selector}, "required_fields": [field], "query": optional str}
+        """
+        if not self.web:
+            return {"status": "error", "error": "WebTools not configured"}
+        selectors = params.get("selectors", {})
+        required_fields = params.get("required_fields") or list(selectors.keys())
+        query = params.get("query", "form data")
+        fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
+        filled = []
+        for field, selector in selectors.items():
+            val = fill_map.get(field)
+            if val is None:
+                continue
+            res = self.web.fill(url=params.get("url", "about:blank"), selector=selector, text=str(val))
+            filled.append({"field": field, "value": val, "selector": selector, "result": res})
+        return {"status": "success", "filled": filled}
 
     def _embed_text(self, text: str) -> Optional[List[float]]:
         if not text:
@@ -391,6 +452,26 @@ class PersonalAssistantAgent:
                 ],
             }
         return None
+
+    def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list) -> Dict[str, Any]:
+        """
+        Prefer reuse of a retrieved procedure if available; else fallback.
+        """
+        if proc_matches:
+            proc = proc_matches[0]
+            return {
+                "intent": intent,
+                "steps": [
+                    {
+                        "tool": "procedure.search",
+                        "params": {"query": user_request, "top_k": 3},
+                        "comment": f"Reuse procedure match {proc.get('props', {}).get('title', '')}",
+                    }
+                ],
+                "reuse": True,
+            }
+        fallback = self._fallback_plan(intent, user_request)
+        return fallback or {"intent": intent, "steps": [], "fallback": True}
 
     def _log_message(self, role: str, content: str, provenance: Provenance) -> None:
         """Persist conversation messages with embeddings into history."""

@@ -39,6 +39,7 @@ Tool catalog (choose minimal set):
 - cpms.create_task(procedure_id, title, payload) / cpms.list_tasks(procedure_id?)
 - procedure.create(title, description, steps[], dependencies?, guards?)  # persist Procedure/Step DAG with embeddings
 - procedure.search(query, top_k?)  # retrieve similar procedures by embedding/text
+- form.autofill(url, selectors{field:selector}, required_fields?, query?)  # autofill using stored FormData/Identity/Credential/PaymentMethod
 
 Web inspection policy:
 - Use web.get_dom(url) when you need DOM HTML and a screenshot for vision-based reasoning, then follow up with web.click_* or web.fill actions as needed.

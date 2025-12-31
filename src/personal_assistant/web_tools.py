@@ -1,4 +1,6 @@
-from typing import Dict, Any
+import os
+import time
+from typing import Dict, Any, Optional
 import base64
 
 from src.personal_assistant.tools import WebTools
@@ -10,9 +12,10 @@ class PlaywrightWebTools(WebTools):
     Each call launches a fresh browser context to keep it simple.
     """
 
-    def __init__(self, browser_type: str = "chromium", headless: bool = True):
+    def __init__(self, browser_type: str = "chromium", headless: bool = True, capture_dir: Optional[str] = None):
         self.browser_type = browser_type
         self.headless = headless
+        self.capture_dir = capture_dir or os.environ.get("AGENT_CAPTURE_DIR", "/tmp/agent-captures")
 
     def _with_page(self, url: str, action):
         try:
@@ -56,7 +59,8 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             img_bytes = page.screenshot(full_page=True)
-            return {"status": response.status if response else 0, "url": u, "image_bytes": img_bytes}
+            path = self._maybe_save(u, img_bytes, suffix="screenshot.png")
+            return {"status": response.status if response else 0, "url": u, "image_bytes": img_bytes, "path": path}
 
         return self._with_page(url, action)
 
@@ -66,11 +70,13 @@ class PlaywrightWebTools(WebTools):
             body = page.content()
             img_bytes = page.screenshot(full_page=True)
             img_b64 = base64.b64encode(img_bytes).decode("ascii")
+            path = self._maybe_save(u, img_bytes, suffix="dom.png")
             return {
                 "status": response.status if response else 0,
                 "url": u,
                 "html": body,
                 "screenshot_base64": img_b64,
+                "screenshot_path": path,
             }
 
         return self._with_page(url, action)
@@ -83,9 +89,13 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             locator = page.locator(query)
+            # Try text-based locator if css/xpath fails
             if locator.count() == 0:
                 locator = page.get_by_text(query)
-            box = locator.first.bounding_box()
+            try:
+                box = locator.first.bounding_box(timeout=500)
+            except Exception:
+                box = None
             if not box:
                 return {"status": 404, "url": u, "query": query, "bbox": None}
             return {"status": response.status if response else 0, "url": u, "query": query, "bbox": box}
@@ -96,7 +106,9 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.mouse.click(x, y)
-            return {"status": response.status if response else 0, "url": u, "clicked": [x, y]}
+            img_bytes = page.screenshot(full_page=True)
+            path = self._maybe_save(u, img_bytes, suffix="click_xy.png")
+            return {"status": response.status if response else 0, "url": u, "clicked": [x, y], "screenshot_path": path}
 
         return self._with_page(url, action)
 
@@ -104,7 +116,9 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.click(selector)
-            return {"status": response.status if response else 0, "url": u, "selector": selector}
+            img_bytes = page.screenshot(full_page=True)
+            path = self._maybe_save(u, img_bytes, suffix="click_selector.png")
+            return {"status": response.status if response else 0, "url": u, "selector": selector, "screenshot_path": path}
 
         return self._with_page(url, action)
 
@@ -112,7 +126,9 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.click(f"xpath={xpath}")
-            return {"status": response.status if response else 0, "url": u, "xpath": xpath}
+            img_bytes = page.screenshot(full_page=True)
+            path = self._maybe_save(u, img_bytes, suffix="click_xpath.png")
+            return {"status": response.status if response else 0, "url": u, "xpath": xpath, "screenshot_path": path}
 
         return self._with_page(url, action)
 
@@ -120,7 +136,9 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.fill(selector, text)
-            return {"status": response.status if response else 0, "url": u, "selector": selector, "text": text}
+            img_bytes = page.screenshot(full_page=True)
+            path = self._maybe_save(u, img_bytes, suffix="fill.png")
+            return {"status": response.status if response else 0, "url": u, "selector": selector, "text": text, "screenshot_path": path}
 
         return self._with_page(url, action)
 
@@ -128,9 +146,23 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.wait_for_selector(selector, timeout=timeout_ms)
-            return {"status": response.status if response else 0, "url": u, "selector": selector}
+            img_bytes = page.screenshot(full_page=True)
+            path = self._maybe_save(u, img_bytes, suffix="wait_for.png")
+            return {"status": response.status if response else 0, "url": u, "selector": selector, "screenshot_path": path}
 
         return self._with_page(url, action)
+
+    def _maybe_save(self, url: str, img_bytes: bytes, suffix: str) -> Optional[str]:
+        try:
+            os.makedirs(self.capture_dir, exist_ok=True)
+            safe_url = url.replace("://", "_").replace("/", "_")
+            fname = f"{int(time.time()*1000)}_{safe_url}_{suffix}"
+            fpath = os.path.join(self.capture_dir, fname)
+            with open(fpath, "wb") as f:
+                f.write(img_bytes)
+            return fpath
+        except Exception:
+            return None
 
 
 class AppiumUITools:

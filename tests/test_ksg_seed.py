@@ -33,6 +33,36 @@ class TestKSGSeed(unittest.TestCase):
         self.assertIn(("DAG", "List"), rels)
         self.assertIn(("Queue", "List"), rels)
         self.assertIn(("Procedure", "DAG"), rels)
+        self.assertIn(("Credential", "Vault"), rels)
+        self.assertIn(("PaymentMethod", "Vault"), rels)
+        self.assertIn(("Identity", "Vault"), rels)
+        self.assertIn(("FormData", "Vault"), rels)
+
+    def test_vault_property_defs_present(self):
+        memory = MockMemoryTools()
+        ksg = KSGStore(memory)
+        ksg.ensure_seeds()
+        props = {pd["prop"] for pd in DEFAULT_PROPERTY_DEFS}
+        expected = {
+            "username",
+            "password",
+            "secret",
+            "appName",
+            "cardNumber",
+            "cardExpiry",
+            "cardCvv",
+            "billingAddress",
+            "identityNumber",
+            "givenName",
+            "familyName",
+            "address",
+            "city",
+            "state",
+            "postalCode",
+            "country",
+            "phone",
+        }
+        self.assertTrue(expected.issubset(props))
 
     def test_seed_sets_embeddings_and_tag_embedding(self):
         memory = MockMemoryTools()

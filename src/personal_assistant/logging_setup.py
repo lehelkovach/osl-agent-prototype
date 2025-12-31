@@ -1,4 +1,5 @@
 import logging
+import os
 import structlog
 try:
     # Newer import path per deprecation notice
@@ -10,13 +11,23 @@ except Exception:
 
 
 def configure_logging():
-    # Configure stdlib logger to emit JSON
+    # Configure stdlib logger to emit JSON to stdout and file
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
     formatter = JsonFormatter()
-    handler.setFormatter(formatter)
-    logger.handlers = [handler]
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
+    log_path = os.environ.get("AGENT_LOG_FILE")
+    handlers = [stream_handler]
+    if log_path:
+        file_handler = logging.FileHandler(log_path)
+        file_handler.setFormatter(formatter)
+        handlers.append(file_handler)
+
+    logger.handlers = handlers
+    logger.propagate = False
 
     structlog.configure(
         processors=[

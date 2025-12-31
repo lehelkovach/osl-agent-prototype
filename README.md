@@ -55,7 +55,7 @@ flowchart TB
    - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev.
 4) Run the demo: `python main.py` (prefers Arango → Chroma at `.chroma/` → in-memory mock).
 5) Run tests: `pytest` (a conftest pins the repo root on `sys.path`; 33 passing, 2 skipped in CI-like runs).
-6) Run the HTTP service: `uvicorn src.personal_assistant.service:main --reload` or `poetry run agent-service`.
+6) Run the HTTP service: `uvicorn src.personal_assistant.service:main --reload` or `poetry run agent-service`. Open `http://localhost:8000/ui` for chat/logs/runs tabs.
 
 ## Current State
 - Agent loop exercises tasks/calendar/contacts/web tools with mock backends and logs lifecycle events via an event bus.
@@ -73,3 +73,21 @@ flowchart TB
 - Persist event/log streams to storage and broaden the UI to show live streams + memory/task views.
 - Add richer RAG prompts so the agent can synthesize/reuse stored DAG procedures (e.g., LinkedIn recruiter workflows) and learn from prior embeddings.
 - Split the KSG module into its own package when ready (per goal of carving it into a subproject).
+
+## Development Roadmap / Not Yet Implemented
+- Production-grade Playwright/Appium flows with retries/timeouts and real vision-assisted locators; live end-to-end tests beyond fixtures.
+- Sandbox/confirmation-backed shell executor (the current real executor runs commands directly).
+- Secrets/vault hardening (encryption at rest, scoped access) beyond the current Credential/FormData prototypes.
+- Ontology workbench UI for browsing/editing concepts, tags, and prototypes; richer run replay with embedded screenshots/DOM.
+- Native Arango vector indexes/AQL scoring (currently client-side cosine) and cache flattening for fast queries.
+- Live CPMS integration test hitting a real endpoint (adapter is wired, but test falls back to fake without env).
+- Deployment hardening (Docker, auth/SSO, metering/billing hooks).
+
+## Version History (high level)
+- Added KSG seeds: DAG/List/Queue/Procedure/Step/Tag, plus vault/credential/identity/payment/form data prototypes and properties.
+- Added ProcedureBuilder (create/search) with procedure reuse in agent planning.
+- Added CPMS adapter and tools; agent supports cpms.* calls.
+- Added form autofill (form.autofill) backed by stored FormData/Identity/Credential/PaymentMethod.
+- Added real shell executor (staged vs execute) alongside mock.
+- Added Playwright captures for web actions and run replay endpoints/UI (chat/logs/runs tabs).
+- Added semantic memory “remember” tool with embedding enforcement and credential recall tests.

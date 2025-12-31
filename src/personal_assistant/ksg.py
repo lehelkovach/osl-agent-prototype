@@ -22,6 +22,23 @@ DEFAULT_PROPERTY_DEFS = [
     {"prop": "url", "dtype": "url"},
     {"prop": "sender", "dtype": "ref(Agent)"},
     {"prop": "recipient", "dtype": "list[ref(Agent)]"},
+    {"prop": "username", "dtype": "text"},
+    {"prop": "password", "dtype": "text"},
+    {"prop": "secret", "dtype": "text"},
+    {"prop": "appName", "dtype": "text"},
+    {"prop": "cardNumber", "dtype": "text"},
+    {"prop": "cardExpiry", "dtype": "text"},
+    {"prop": "cardCvv", "dtype": "text"},
+    {"prop": "billingAddress", "dtype": "text"},
+    {"prop": "identityNumber", "dtype": "text"},
+    {"prop": "givenName", "dtype": "text"},
+    {"prop": "familyName", "dtype": "text"},
+    {"prop": "address", "dtype": "text"},
+    {"prop": "city", "dtype": "text"},
+    {"prop": "state", "dtype": "text"},
+    {"prop": "postalCode", "dtype": "text"},
+    {"prop": "country", "dtype": "text"},
+    {"prop": "phone", "dtype": "text"},
 ]
 
 DEFAULT_PROTOTYPES = [
@@ -41,6 +58,11 @@ DEFAULT_PROTOTYPES = [
     "Queue",
     "Procedure",
     "Step",
+    "Vault",
+    "Credential",
+    "PaymentMethod",
+    "Identity",
+    "FormData",
 ]
 
 # Prototype inheritance mapping child -> parent
@@ -48,6 +70,10 @@ PROTOTYPE_INHERITS = {
     "DAG": "List",
     "Queue": "List",
     "Procedure": "DAG",
+    "Credential": "Vault",
+    "PaymentMethod": "Vault",
+    "Identity": "Vault",
+    "FormData": "Vault",
 }
 
 DEFAULT_OBJECTS = [
