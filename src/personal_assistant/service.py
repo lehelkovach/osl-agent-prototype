@@ -207,6 +207,16 @@ def default_agent_from_env() -> PersonalAssistantAgent:
     load_dotenv(".env.local")
     load_dotenv()
     memory = None
+    log = get_logger("service")
+    log.info(
+        "startup_flags",
+        embedding_backend=os.getenv("EMBEDDING_BACKEND", "openai"),
+        use_fake_openai=os.getenv("USE_FAKE_OPENAI") == "1",
+        use_local_embed=os.getenv("EMBEDDING_BACKEND", "").lower() == "local",
+        use_cpms=os.getenv("USE_CPMS_FOR_PROCS") == "1",
+        arango_url=os.getenv("ARANGO_URL", ""),
+        chroma_enabled=bool(os.getenv("ARANGO_URL") == "" and os.getenv("CHROMA_PATH", ".chroma")),
+    )
     if os.getenv("ARANGO_URL"):
         try:
             from src.personal_assistant.arango_memory import ArangoMemoryTools
