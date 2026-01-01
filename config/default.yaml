@@ -3,6 +3,8 @@ port: 8000
 debug: false
 log_level: "info"
 embedding_backend: "openai"  # options: openai | local
+# local embedding model (sentence-transformers); empty means default model
+local_embed_model: ""
 use_fake_openai: false
 use_cpms_for_procs: false
 use_playwright: false

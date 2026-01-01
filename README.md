@@ -56,7 +56,7 @@ flowchart TB
    - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev.
 4) Optional local embeddings (no OpenAI needed):
    - Run `./scripts/install_local_embedder.sh` once (installs `sentence-transformers`).
-   - Set `EMBEDDING_BACKEND=local`; optionally `LOCAL_EMBED_MODEL` to force a specific model, or `LOCAL_EMBED_DIM` to control the hash-fallback size.
+   - Set `EMBEDDING_BACKEND=local`; optionally `LOCAL_EMBED_MODEL` (or `config/default.yaml: local_embed_model`) to force a specific model, or `LOCAL_EMBED_DIM` to control the hash-fallback size.
 5) Run the demo: `python main.py` (prefers Arango → Chroma at `.chroma/` → in-memory mock).
 6) Run tests: `poetry run pytest` (a conftest pins the repo root on `sys.path`; currently 90+ passing tests, env-guarded for Playwright/Arango).
 7) Run the HTTP service: `uvicorn src.personal_assistant.service:main --reload` or `poetry run agent-service`. Open `http://localhost:8000/ui` for chat/logs/runs tabs.
