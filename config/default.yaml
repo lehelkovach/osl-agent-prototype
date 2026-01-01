@@ -1,0 +1,16 @@
+host: "0.0.0.0"
+port: 8000
+debug: false
+log_level: "info"
+embedding_backend: "openai"  # options: openai | local
+use_fake_openai: false
+use_cpms_for_procs: false
+use_playwright: false
+arango:
+  url: ""
+  db: "agent_memory"
+  user: ""
+  password: ""
+  verify: ""
+chroma:
+  path: ".chroma"

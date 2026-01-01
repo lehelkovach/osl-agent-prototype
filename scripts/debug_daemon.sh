@@ -33,6 +33,8 @@ STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
 SNAP_LINES="${SNAP_LINES:-300}"
 SNAPDIR="${ROOT}/log_snapshots"
 LOG_WEBHOOK="${LOG_WEBHOOK:-}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
+AGENT_CONFIG="${AGENT_CONFIG:-}"
 
 mkdir -p "${SNAPDIR}"
 mkdir -p "$(dirname "${LOGFILE}")"
@@ -74,22 +76,15 @@ start_agent() {
   export AGENT_LOG_FILE="${LOGFILE}"
   echo "Starting agent on ${HOST}:${PORT}"
   echo "Logging to ${LOGFILE}"
-  # Run uvicorn programmatically to keep our logging config (log_config=None).
-  # Disable access log to avoid BrokenPipe noise on reload.
+  args=(--host "${HOST}" --port "${PORT}" --log-level "${LOG_LEVEL}")
+  if [[ "${DEBUG:-0}" == "1" || "${DEBUG:-}" == "true" ]]; then
+    args+=(--debug)
+  fi
+  if [[ -n "${AGENT_CONFIG}" ]]; then
+    args+=(--config "${AGENT_CONFIG}")
+  fi
   (
-    PYTHONUNBUFFERED=1 python3 - <<PY
-import uvicorn
-from src.personal_assistant import service
-assert service.app is not None, "app failed to initialize"
-uvicorn.run(
-    service.app,
-    host="${HOST}",
-    port=${PORT},
-    reload=False,
-    access_log=False,
-    log_config=None,
-)
-PY
+    PYTHONUNBUFFERED=1 poetry run python -m src.personal_assistant.service "${args[@]}"
   ) > >(tee -a "${LOGFILE}") 2> >(tee -a "${LOGFILE}" >&2) &
   local pid=$!
   echo "${pid}" > "${PIDFILE}"

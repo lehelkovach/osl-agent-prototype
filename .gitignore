@@ -21,3 +21,4 @@ env/
 log_dump.txt
 log_snapshots/
 *.pid
+.chroma-test/

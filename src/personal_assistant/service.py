@@ -1,4 +1,6 @@
 from typing import List
+import argparse
+import yaml
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -203,32 +205,57 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
     return app
 
 
-def default_agent_from_env() -> PersonalAssistantAgent:
+def load_config(config_path: str | None) -> dict:
+    cfg: dict = {}
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    default_path = os.path.join(base_dir, "config", "default.yaml")
+    for path in [default_path, config_path]:
+        if path and os.path.exists(path):
+            with open(path, "r") as f:
+                cfg.update(yaml.safe_load(f) or {})
+    return cfg
+
+
+def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent:
     load_dotenv(".env.local")
     load_dotenv()
+    cfg = config or {}
     memory = None
     log = get_logger("service")
+    embedding_backend = os.getenv("EMBEDDING_BACKEND", cfg.get("embedding_backend", "openai"))
+    use_fake_openai = os.getenv("USE_FAKE_OPENAI", str(cfg.get("use_fake_openai", False))).lower() in ("1", "true", "yes")
+    use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS", str(cfg.get("use_cpms_for_procs", False))).lower() in ("1", "true", "yes")
+    arango_cfg = cfg.get("arango", {}) if isinstance(cfg, dict) else {}
+    chroma_cfg = cfg.get("chroma", {}) if isinstance(cfg, dict) else {}
     log.info(
         "startup_flags",
-        embedding_backend=os.getenv("EMBEDDING_BACKEND", "openai"),
-        use_fake_openai=os.getenv("USE_FAKE_OPENAI") == "1",
-        use_local_embed=os.getenv("EMBEDDING_BACKEND", "").lower() == "local",
-        use_cpms=os.getenv("USE_CPMS_FOR_PROCS") == "1",
-        arango_url=os.getenv("ARANGO_URL", ""),
-        chroma_enabled=bool(os.getenv("ARANGO_URL") == "" and os.getenv("CHROMA_PATH", ".chroma")),
+        embedding_backend=embedding_backend,
+        use_fake_openai=use_fake_openai,
+        use_local_embed=embedding_backend.lower() == "local",
+        use_cpms=use_cpms_for_procs,
+        arango_url=os.getenv("ARANGO_URL", arango_cfg.get("url", "")),
+        chroma_enabled=bool(os.getenv("ARANGO_URL") == "" and os.getenv("CHROMA_PATH", chroma_cfg.get("path", ".chroma"))),
     )
-    if os.getenv("ARANGO_URL"):
+    arango_url = os.getenv("ARANGO_URL", arango_cfg.get("url", ""))
+    if arango_url:
         try:
             from src.personal_assistant.arango_memory import ArangoMemoryTools
-            memory = ArangoMemoryTools()
-            print(f"Using ArangoDB memory at {os.getenv('ARANGO_URL')} db={os.getenv('ARANGO_DB', 'agent_memory')}")
+            memory = ArangoMemoryTools(
+                db_name=os.getenv("ARANGO_DB", arango_cfg.get("db", "agent_memory")),
+                url=arango_url,
+                username=os.getenv("ARANGO_USER", arango_cfg.get("user", "")),
+                password=os.getenv("ARANGO_PASSWORD", arango_cfg.get("password", "")),
+                verify=os.getenv("ARANGO_VERIFY", arango_cfg.get("verify", "")) or True,
+            )
+            print(f"Using ArangoDB memory at {arango_url} db={memory.db_name}")
         except Exception as e:
             print(f"Arango unavailable, trying ChromaDB (error: {e})")
     if memory is None:
         try:
             from src.personal_assistant.chroma_memory import ChromaMemoryTools
-            memory = ChromaMemoryTools()
-            print("Using ChromaDB-backed memory at ./.chroma")
+            chroma_path = os.getenv("CHROMA_PATH", chroma_cfg.get("path", ".chroma"))
+            memory = ChromaMemoryTools(path=chroma_path)
+            print(f"Using ChromaDB-backed memory at {chroma_path}")
         except Exception as e:
             print(f"Falling back to in-memory mock memory (Chroma unavailable: {e})")
             memory = MockMemoryTools()
@@ -236,8 +263,8 @@ def default_agent_from_env() -> PersonalAssistantAgent:
     tasks = MockTaskTools()
     contacts = MockContactsTools()
     # Use OpenAI embeddings if available; allow forcing fake client via USE_FAKE_OPENAI.
-    use_fake = os.getenv("USE_FAKE_OPENAI") == "1"
-    use_local_embed = os.getenv("EMBEDDING_BACKEND", "").lower() == "local"
+    use_fake = use_fake_openai
+    use_local_embed = embedding_backend.lower() == "local"
     local_embedder = LocalEmbedder() if use_local_embed else None
     try:
         if use_fake:
@@ -259,10 +286,11 @@ def default_agent_from_env() -> PersonalAssistantAgent:
 
     procedure_builder = ProcedureBuilder(memory, embed_fn=_embed)
     cpms_adapter = None
-    try:
-        cpms_adapter = CPMSAdapter.from_env()
-    except CPMSNotInstalled:
-        cpms_adapter = None
+    if use_cpms_for_procs:
+        try:
+            cpms_adapter = CPMSAdapter.from_env()
+        except CPMSNotInstalled:
+            cpms_adapter = None
     return PersonalAssistantAgent(
         memory,
         calendar,
@@ -274,36 +302,33 @@ def default_agent_from_env() -> PersonalAssistantAgent:
     )
 
 
-def main():
+def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, log_level: str = "info", config_path: str | None = None):
+    """Programmatic entrypoint used by scripts."""
     configure_logging()
     log = get_logger("service")
-    agent = default_agent_from_env()
+    cfg = load_config(config_path)
+    agent = default_agent_from_env(cfg)
     app = build_app(agent)
-    port = int(os.getenv("PORT", "8000"))
-    host = os.getenv("HOST", "0.0.0.0")
-    debug = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
-    log_level = os.getenv("LOG_LEVEL", "info")
     log.info(
         "starting_service",
         host=host,
         port=port,
         debug=debug,
         log_level=log_level,
-        embedding_backend=os.getenv("EMBEDDING_BACKEND", "openai"),
-        use_fake_openai=os.getenv("USE_FAKE_OPENAI") == "1",
-        use_cpms=os.getenv("USE_CPMS_FOR_PROCS") == "1",
+        config_path=config_path,
     )
     uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
 
 
-def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, log_level: str = "info"):
-    """Programmatic entrypoint used by scripts."""
-    configure_logging()
-    log = get_logger("service")
-    agent = default_agent_from_env()
-    app = build_app(agent)
-    log.info("starting_service", host=host, port=port, debug=debug, log_level=log_level)
-    uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
+def main():
+    parser = argparse.ArgumentParser(description="Run the agent service.")
+    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
+    parser.add_argument("--host", type=str, default=os.getenv("HOST", "0.0.0.0"))
+    parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
+    parser.add_argument("--debug", action="store_true", help="Enable reload/debug")
+    parser.add_argument("--log-level", type=str, default=os.getenv("LOG_LEVEL", "info"))
+    args = parser.parse_args()
+    run_service(host=args.host, port=args.port, debug=args.debug, log_level=args.log_level, config_path=args.config)
 
 
 if __name__ == "__main__":
