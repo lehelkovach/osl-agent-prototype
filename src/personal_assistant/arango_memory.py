@@ -61,7 +61,7 @@ class ArangoMemoryTools(MemoryTools):
         filters: Optional[Dict[str, Any]] = None,
         query_embedding: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
-        """Simple search over nodes with optional embedding-based scoring."""
+        """Search over nodes with optional embedding and lightweight text scoring."""
         docs = []
         cursor = self.nodes.all()
         for doc in cursor:
@@ -85,13 +85,33 @@ class ArangoMemoryTools(MemoryTools):
                 return 0.0
             return dot / (norm_a * norm_b)
 
-        if query_embedding:
-            docs.sort(
-                key=lambda d: cosine(query_embedding, d.get("llm_embedding", []) or []),
-                reverse=True,
-            )
+        tokens = [t for t in query_text.lower().split() if t]
 
-        return docs[:top_k]
+        def text_score(doc: Dict[str, Any]) -> float:
+            score = 0.0
+            labels = " ".join(doc.get("labels", []) or []).lower()
+            props = doc.get("props", {}) or {}
+            vals = []
+            for v in props.values():
+                if isinstance(v, str):
+                    vals.append(v.lower())
+                elif isinstance(v, list):
+                    vals.extend([str(x).lower() for x in v if isinstance(x, (str, int, float))])
+            blob = labels + " " + " ".join(vals)
+            for tok in tokens:
+                if tok in blob:
+                    score += 1.0
+            return score
+
+        scored_docs = []
+        for d in docs:
+            emb_score = cosine(query_embedding, d.get("llm_embedding", []) or []) if query_embedding else 0.0
+            txt_score = text_score(d)
+            total = emb_score + txt_score
+            scored_docs.append((total, d))
+
+        scored_docs.sort(key=lambda t: t[0], reverse=True)
+        return [d for _, d in scored_docs[:top_k]]
 
     def upsert(
         self,

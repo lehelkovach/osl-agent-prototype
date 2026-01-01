@@ -63,6 +63,31 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertEqual(result['plan']['intent'], 'task')
         self.assertEqual(result['execution_results']['status'], 'completed')
 
+    def test_remember_fallback_creates_memory(self):
+        memory = MockMemoryTools()
+        calendar = MockCalendarTools()
+        tasks = MockTaskTools()
+        web = MockWebTools()
+        contacts = MockContactsTools()
+        fake_plan = """
+        {
+          "intent": "remember",
+          "steps": []
+        }
+        """
+        agent = PersonalAssistantAgent(
+            memory,
+            calendar,
+            tasks,
+            web=web,
+            contacts=contacts,
+            openai_client=FakeOpenAIClient(chat_response=fake_plan, embedding=[0.1, 0.2, 0.3]),
+        )
+        agent.execute_request("remember my name is Ada")
+        concepts = [n for n in memory.nodes.values() if n.kind == "Concept" and "Ada" in n.props.get("note", "")]
+        self.assertEqual(len(concepts), 1)
+        self.assertIsNotNone(concepts[0].llm_embedding)
+
     def test_openai_json_plan_parsed_and_used(self):
         """Ensure a valid JSON response from OpenAI is parsed and executed (no fallback)."""
         memory = MockMemoryTools()

@@ -18,10 +18,12 @@ class SpyMemoryTools(MockMemoryTools):
         self.last_results = None
 
     def search(self, query_text, top_k, filters=None, query_embedding=None):
-        self.last_query_embedding = query_embedding
+        if query_embedding is not None:
+            self.last_query_embedding = query_embedding
         self.last_query_text = query_text
         results = super().search(query_text, top_k, filters, query_embedding)
-        self.last_results = results
+        if query_embedding is not None:
+            self.last_results = results
         return results
 
 

@@ -1,6 +1,8 @@
 import json
 import asyncio
 from typing import Dict, Any, List, Optional
+import re
+import os
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -13,6 +15,7 @@ from src.personal_assistant.events import EventBus, NullEventBus
 from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.form_filler import FormDataRetriever
+from src.personal_assistant.logging_setup import get_logger
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -29,6 +32,7 @@ class PersonalAssistantAgent:
         procedure_builder: Optional[ProcedureBuilder] = None,
         openai_client: Optional[OpenAIClient] = None,
         event_bus: Optional[EventBus] = None,
+        use_cpms_for_procs: Optional[bool] = None,
     ):
         self.memory = memory
         self.calendar = calendar
@@ -45,6 +49,14 @@ class PersonalAssistantAgent:
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
         self.form_retriever = FormDataRetriever(memory)
+        self.log = get_logger("agent")
+        # Flag to route procedure ops through CPMS if present
+        if use_cpms_for_procs is None:
+            self.use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS") == "1"
+        else:
+            self.use_cpms_for_procs = use_cpms_for_procs
+        # Flag to enable ask-user fallback on empty plans (default off to preserve legacy flows)
+        self.ask_user_enabled = os.getenv("ASK_USER_FALLBACK") == "1"
 
     def execute_request(self, user_request: str) -> Dict[str, Any]:
         """
@@ -64,11 +76,20 @@ class PersonalAssistantAgent:
 
         # 1. Classify Intent (simple heuristic)
         intent = self._classify_intent(user_request)
+        self.log.info("execute_request", intent=intent, user_request=user_request, trace_id=provenance.trace_id)
 
         # 2. Retrieve Memory (+ optional embedding) and supporting context
         query_embedding = self._embed_text(user_request)
+        top_k = 25 if intent == "inform" else 5
         memory_results = self.memory.search(
-            user_request, top_k=5, query_embedding=query_embedding
+            user_request, top_k=top_k, query_embedding=query_embedding
+        )
+        self.log.info(
+            "memory_retrieved",
+            results=len(memory_results),
+            top_k=top_k,
+            has_embedding=query_embedding is not None,
+            trace_id=provenance.trace_id,
         )
         # Procedure reuse (embedding-aware)
         if self.procedure_builder:
@@ -104,6 +125,33 @@ class PersonalAssistantAgent:
         )
         contacts_context = self.contacts.list() if self.contacts else []
 
+        # Quick memory answer path for simple inform queries (e.g., "what is my name?")
+        mem_answer = self._answer_from_memory(intent, memory_results)
+        if mem_answer:
+            plan = {
+                "intent": "inform",
+                "fallback": True,
+                "raw_llm": mem_answer,
+                "steps": [],
+                "trace_id": provenance.trace_id,
+            }
+            self._log_message("assistant", mem_answer, provenance)
+            self._emit(
+                "plan_ready",
+                {
+                    "plan": plan,
+                    "raw_llm": mem_answer,
+                    "trace_id": provenance.trace_id,
+                    "fallback": True,
+                },
+            )
+            execution_results = {"status": "no action taken", "trace_id": provenance.trace_id}
+            self._emit(
+                "execution_completed",
+                {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
+            )
+            return {"plan": plan, "execution_results": execution_results}
+
         # 3. Propose a Plan (LLM)
         plan, raw_llm = self._generate_plan(
             intent,
@@ -120,6 +168,39 @@ class PersonalAssistantAgent:
             plan = self._reuse_or_fallback(intent, user_request, proc_matches)
         if plan.get("fallback") or plan.get("reuse"):
             plan.setdefault("raw_llm", "Hello! I'm ready to help.")
+
+        # Confidence/uncertainty handling: if we have no actionable steps after fallback/reuse
+        # and the intent is not a direct "remember"/"task"/"schedule", ask the user for guidance
+        # when explicitly enabled or when the user request clearly asks "how" or mentions "unknown".
+        keywords = ["how", "unknown"]
+        force_ask = any(k in user_request.lower() for k in keywords)
+        if (self.ask_user_enabled or force_ask) and (not plan.get("steps")) and intent not in ("remember", "task", "schedule"):
+            clarification = (
+                "I need your instructions. Please describe the steps or procedure so I can save it "
+                "and queue it."
+            )
+            plan["fallback"] = True
+            plan["raw_llm"] = clarification
+            plan.setdefault("intent", intent)
+            plan.setdefault("trace_id", provenance.trace_id)
+            self._emit(
+                "plan_ready",
+                {
+                    "plan": plan,
+                    "raw_llm": clarification,
+                    "trace_id": provenance.trace_id,
+                    "fallback": True,
+                },
+            )
+            execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
+            self._emit(
+                "execution_completed",
+                {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
+            )
+            plan["trace_id"] = provenance.trace_id
+            execution_results["trace_id"] = provenance.trace_id
+            return {"plan": plan, "execution_results": execution_results}
+
         self._emit(
             "plan_ready",
             {
@@ -129,12 +210,28 @@ class PersonalAssistantAgent:
                 "fallback": plan.get("fallback", False),
             },
         )
+        self.log.debug(
+            "plan_ready",
+            module="agent",
+            function="execute_request",
+            intent=intent,
+            fallback=plan.get("fallback", False),
+            reuse=plan.get("reuse", False),
+            trace_id=provenance.trace_id,
+        )
 
         # 4. Execute via Tools
         execution_results = self._execute_plan(plan, provenance)
         self._emit(
             "execution_completed",
             {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
+        )
+        self.log.debug(
+            "execution_completed",
+            module="agent",
+            function="execute_request",
+            status=execution_results.get("status"),
+            trace_id=provenance.trace_id,
         )
 
         # 5. Write Back (already handled per tool)
@@ -146,11 +243,12 @@ class PersonalAssistantAgent:
 
     def _classify_intent(self, user_request: str) -> str:
         """Simulates intent classification based on keywords."""
-        if "remind me to" in user_request or "add task" in user_request:
+        text = user_request.lower()
+        if "remind me to" in text or "add task" in text:
             return "task"
-        elif "schedule" in user_request or "meeting" in user_request:
+        elif "schedule" in text or "meeting" in text:
             return "schedule"
-        elif "remember" in user_request:
+        elif "remember" in text:
             return "remember"
         else:
             return "inform"
@@ -166,21 +264,35 @@ class PersonalAssistantAgent:
         procedure_matches: list,
     ) -> (Dict[str, Any], Optional[str]):
         """Generates a plan by calling the LLM for structured JSON. Returns plan and raw LLM text."""
+        def _norm(obj):
+            if isinstance(obj, list):
+                return [_norm(x) for x in obj]
+            if isinstance(obj, dict):
+                return {k: _norm(v) for k, v in obj.items()}
+            if hasattr(obj, "__dict__"):
+                return _norm(obj.__dict__)
+            return obj
+
+        mem_payload = _norm(memory_results)
+        proc_payload = _norm(procedure_matches)
+        tasks_payload = _norm(tasks_context)
+        calendar_payload = _norm(calendar_context)
+        contacts_payload = _norm(contacts_context)
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "system", "content": self.developer_prompt},
             {"role": "user", "content": f"User request: {user_request}"},
             {"role": "user", "content": f"Intent: {intent}"},
-            {"role": "user", "content": f"Memory results: {json.dumps(memory_results)}"},
-            {"role": "user", "content": f"Procedure matches: {json.dumps(procedure_matches)}"},
-            {"role": "user", "content": f"Tasks context: {json.dumps(tasks_context)}"},
+            {"role": "user", "content": f"Memory results: {json.dumps(mem_payload)}"},
+            {"role": "user", "content": f"Procedure matches: {json.dumps(proc_payload)}"},
+            {"role": "user", "content": f"Tasks context: {json.dumps(tasks_payload)}"},
             {
                 "role": "user",
-                "content": f"Calendar context: {json.dumps(calendar_context)}",
+                "content": f"Calendar context: {json.dumps(calendar_payload)}",
             },
             {
                 "role": "user",
-                "content": f"Contacts context: {json.dumps(contacts_context)}",
+                "content": f"Contacts context: {json.dumps(contacts_payload)}",
             },
             {
                 "role": "user",
@@ -191,9 +303,31 @@ class PersonalAssistantAgent:
             llm_text = self.openai_client.chat(messages, temperature=0.0)
             plan_obj = json.loads(llm_text)
             plan_obj["raw_llm"] = llm_text
+            self.log.debug(
+                "llm_plan_success",
+                module="agent",
+                function="_generate_plan",
+                intent=intent,
+            )
             return plan_obj, llm_text
         except Exception as e:
+            # Emit LLM error to event bus
+            self._emit(
+                "llm_error",
+                {
+                    "error": str(e),
+                    "trace_id": None,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                },
+            )
             llm_text = locals().get("llm_text", None)
+            self.log.error(
+                "llm_plan_error",
+                module="agent",
+                function="_generate_plan",
+                intent=intent,
+                error=str(e),
+            )
             return {"intent": intent, "steps": [], "error": str(e)}, llm_text
 
     def _execute_plan(self, plan: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
@@ -202,6 +336,15 @@ class PersonalAssistantAgent:
         for step in plan.get("steps", []):
             tool_name = step.get("tool")
             params = step.get("params", {})
+            self.log.debug(
+                "tool_start",
+                module="agent",
+                function="_execute_plan",
+                tool=tool_name,
+                params=params,
+                trace_id=provenance.trace_id,
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
             self._emit(
                 "tool_start",
                 {
@@ -345,25 +488,48 @@ class PersonalAssistantAgent:
                     res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
                 results.append(res)
             elif tool_name == "procedure.create":
-                if not self.procedure_builder:
-                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
-                else:
+                if self.use_cpms_for_procs and self.cpms:
+                    res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
+                elif self.procedure_builder:
+                    norm_params = params.copy()
+                    # Normalize to ProcedureBuilder signature (title instead of name)
+                    if "name" in norm_params and "title" not in norm_params:
+                        norm_params["title"] = norm_params.pop("name")
                     res = {
                         "status": "success",
-                        "procedure": self.procedure_builder.create_procedure(**params),
+                        "procedure": self.procedure_builder.create_procedure(**norm_params),
                     }
+                else:
+                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
                 results.append(res)
             elif tool_name == "procedure.search":
-                if not self.procedure_builder:
-                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
-                else:
+                if self.use_cpms_for_procs and self.cpms:
+                    try:
+                        procs = self.cpms.list_procedures()
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                    else:
+                        res = {"status": "success", "procedures": procs}
+                elif self.procedure_builder:
                     res = {"status": "success", "procedures": self.procedure_builder.search_procedures(**params)}
+                else:
+                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
                 results.append(res)
             elif tool_name == "form.autofill":
                 res = self._autofill_form(params)
                 results.append(res)
             else:
                 results.append({"status": "no action taken", "tool": tool_name})
+            self.log.debug(
+                "tool_result",
+                module="agent",
+                function="_execute_plan",
+                tool=tool_name,
+                params=params,
+                result=results[-1] if results else {},
+                trace_id=provenance.trace_id,
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
             # Emit tool invocation event with params and result
             self._emit(
                 "tool_invoked",
@@ -393,15 +559,45 @@ class PersonalAssistantAgent:
         kind = params.get("kind", "Concept")
         labels = params.get("labels", ["fact"])
         extra_props = params.get("props", {})
+
+        created = []
+        # Always create the primary node according to requested kind/labels/props
         node = Node(
             kind=kind,
             labels=labels,
             props={"content": text, **extra_props},
         )
-        node.llm_embedding = self._embed_text(text)
+        node.llm_embedding = self._embed_text(node.props.get("name") or text)
         self.memory.upsert(node, provenance, embedding_request=True)
         self._emit_memory_upsert(node, provenance)
-        return {"status": "success", "uuid": node.uuid, "kind": node.kind}
+        # Additionally, if a name is present in the text, create supplemental Person/Name nodes
+        person_name = self._extract_person_name(text)
+        if person_name:
+            name_node = Node(
+                kind="Name",
+                labels=["tag", "name"],
+                props={"value": person_name},
+            )
+            name_node.llm_embedding = self._embed_text(person_name)
+            try:
+                self.memory.upsert(name_node, provenance, embedding_request=True)
+                self._emit_memory_upsert(name_node, provenance)
+                created.append(name_node.uuid)
+            except Exception:
+                pass
+            person_node = Node(
+                kind="Person",
+                labels=["fact", "person"],
+                props={"name": person_name, "source_text": text},
+            )
+            person_node.llm_embedding = self._embed_text(person_name)
+            try:
+                self.memory.upsert(person_node, provenance, embedding_request=True)
+                self._emit_memory_upsert(person_node, provenance)
+                created.append(person_node.uuid)
+            except Exception:
+                pass
+        return {"status": "success", "uuid": node.uuid, "kind": node.kind, "extra": created}
 
     def _autofill_form(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -453,6 +649,26 @@ class PersonalAssistantAgent:
                     }
                 ],
             }
+        if intent == "remember":
+            return {
+                "intent": intent,
+                "fallback": True,
+                "raw_llm": "Got it, I'll remember that.",
+                "steps": [
+                    {
+                        "tool": "memory.remember",
+                        "params": {"text": user_request, "kind": "Concept", "props": {"note": user_request}},
+                        "comment": "Fallback remember to store the fact.",
+                    }
+                ],
+            }
+        if intent == "inform":
+            return {
+                "intent": intent,
+                "fallback": True,
+                "raw_llm": "Hello! I'm ready to help.",
+                "steps": [],
+            }
         return None
 
     def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list) -> Dict[str, Any]:
@@ -487,9 +703,89 @@ class PersonalAssistantAgent:
         msg_node.llm_embedding = self._embed_text(content)
         try:
             self.memory.upsert(msg_node, provenance, embedding_request=True)
+            self._emit(
+                "message_logged",
+                {"role": role, "content": content, "trace_id": provenance.trace_id, "ts": provenance.ts},
+            )
         except Exception:
             # Do not fail the agent loop on logging errors
             pass
+
+    def _answer_from_memory(self, intent: str, memory_results: List[Dict[str, Any]]) -> Optional[str]:
+        """Simple recall: if intent is inform and we have memory hits, surface the top match."""
+        if intent != "inform" or not memory_results:
+            return None
+        # First, return immediately if a Person/Name node has an explicit name field.
+        for item in memory_results:
+            props = item.get("props", {}) if isinstance(item, dict) else {}
+            if isinstance(props.get("name"), str) and props["name"].strip():
+                clean = props["name"].strip()
+                return f"Your name is {clean}."
+        # Second pass: explicitly search for Person/Name kinds if not already surfaced.
+        for kind in ("Person", "Name"):
+            try:
+                hits = self.memory.search("", top_k=50, filters={"kind": kind}, query_embedding=None)
+            except Exception:
+                hits = []
+            for item in hits:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                if isinstance(props.get("name"), str) and props["name"].strip():
+                    clean = props["name"].strip()
+                    return f"Your name is {clean}."
+
+        scored: List[tuple[int, str]] = []
+        for item in memory_results:
+            props = item.get("props", {}) if isinstance(item, dict) else {}
+            labels = item.get("labels", []) if isinstance(item, dict) else []
+            kind = item.get("kind") if isinstance(item, dict) else None
+            text = None
+            answer_text = None
+            for key in ("content", "note", "title"):
+                val = props.get(key)
+                if isinstance(val, str) and val.strip():
+                    text = val.strip()
+                    break
+            if not text:
+                continue
+            score = 0
+            if kind == "Person":
+                score += 4
+            if kind == "Name":
+                score += 3
+            if kind == "Concept":
+                score += 1
+            if labels and "fact" in labels:
+                score += 2
+            lower = text.lower()
+            if "name" in lower:
+                score += 2
+            if "my name is" in lower or "i am" in lower:
+                score += 2
+            if "remember" in lower:
+                score += 1
+            if score > 0:
+                scored.append((score, answer_text or text))
+        if not scored:
+            return None
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return scored[0][1]
+
+    def _extract_person_name(self, text: str) -> Optional[str]:
+        """Heuristic extraction of a person's name from a sentence."""
+        patterns = [
+            r"\bmy name is\s+([A-Za-z][A-Za-z\s'.-]{0,60})",
+            r"\bmy name's\s+([A-Za-z][A-Za-z\s'.-]{0,60})",
+            r"\bi am\s+([A-Za-z][A-Za-z\s'.-]{0,60})",
+            r"\bi'm\s+([A-Za-z][A-Za-z\s'.-]{0,60})",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+                name = re.sub(r"[.,;:!?]+$", "", name).strip()
+                if name:
+                    return name
+        return None
         self._emit(
             "message_logged",
             {

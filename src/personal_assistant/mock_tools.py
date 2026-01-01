@@ -3,6 +3,9 @@ import math
 import base64
 from src.personal_assistant.models import Node, Edge, Provenance
 from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ContactsTools, ShellTools
+from src.personal_assistant.logging_setup import get_logger
+
+log = get_logger("mock_tools")
 
 class MockMemoryTools(MemoryTools):
     """A mock implementation of MemoryTools that stores data in-memory."""
@@ -18,8 +21,21 @@ class MockMemoryTools(MemoryTools):
         query_embedding: Optional[List[float]] = None,
     ) -> List[Dict[str, Any]]:
         """Simulates searching memory with optional embedding-based scoring."""
-        print(f"Searching memory for '{query_text}' with top_k={top_k} and filters={filters}")
+        log.info("memory_search", query=query_text, top_k=top_k, filters=filters)
+        if query_embedding is not None:
+            self.last_query_embedding = query_embedding
         candidates = list(self.nodes.values())
+        if filters:
+            filtered = []
+            for n in candidates:
+                match = True
+                for k, v in filters.items():
+                    if getattr(n, k, None) != v:
+                        match = False
+                        break
+                if match:
+                    filtered.append(n)
+            candidates = filtered
 
         def cosine(a: List[float], b: List[float]) -> float:
             if not a or not b or len(a) != len(b):
@@ -46,10 +62,10 @@ class MockMemoryTools(MemoryTools):
         """Simulates upserting an item. Adds it to the in-memory store."""
         if isinstance(item, Node):
             self.nodes[item.uuid] = item
-            print(f"Upserted Node: {item.uuid}")
+            log.info("memory_upsert", kind="node", uuid=item.uuid)
         elif isinstance(item, Edge):
             self.edges[item.uuid] = item
-            print(f"Upserted Edge: {item.uuid}")
+            log.info("memory_upsert", kind="edge", uuid=item.uuid)
         
         return {"status": "success", "uuid": item.uuid}
 
@@ -60,7 +76,7 @@ class MockCalendarTools(CalendarTools):
 
     def list(self, date_range: Dict[str, str]) -> List[Dict[str, Any]]:
         """Simulates listing calendar events."""
-        print(f"Listing calendar events for range: {date_range}")
+        log.info("calendar_list", date_range=date_range)
         return self.events
 
     def create_event(self, title: str, start: str, end: str, attendees: List[str], location: str, notes: str) -> Dict[str, Any]:
@@ -70,7 +86,7 @@ class MockCalendarTools(CalendarTools):
             "attendees": attendees, "location": location, "notes": notes
         }
         self.events.append(event)
-        print(f"Created event: {title}")
+        log.info("calendar_create", title=title)
         return {"status": "success", "event": event}
 
 class MockTaskTools(TaskTools):
@@ -80,7 +96,7 @@ class MockTaskTools(TaskTools):
 
     def list(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Simulates listing tasks."""
-        print(f"Listing tasks with filters: {filters}")
+        log.info("tasks_list", filters=filters)
         return self.tasks
 
     def create(self, title: str, due: Optional[str], priority: int, notes: str, links: List[str]) -> Dict[str, Any]:
@@ -90,7 +106,7 @@ class MockTaskTools(TaskTools):
             "notes": notes, "links": links, "status": "pending"
         }
         self.tasks.append(task)
-        print(f"Created task: {title}")
+        log.info("task_create", title=title)
         return {"status": "success", "task": task}
 
 class MockContactsTools(ContactsTools):
@@ -99,7 +115,7 @@ class MockContactsTools(ContactsTools):
         self.contacts: List[Dict[str, Any]] = []
 
     def list(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        print(f"Listing contacts with filters: {filters}")
+        log.info("contacts_list", filters=filters)
         if not filters:
             return self.contacts
         results = []
@@ -124,7 +140,7 @@ class MockContactsTools(ContactsTools):
             "status": "active",
         }
         self.contacts.append(contact)
-        print(f"Created contact: {name}")
+        log.info("contact_create", name=name)
         return {"status": "success", "contact": contact}
 
 
@@ -136,7 +152,7 @@ class MockShellTools(ShellTools):
     def run(self, command: str, dry_run: bool = True) -> Dict[str, Any]:
         res = {"status": "staged" if dry_run else "executed", "command": command, "dry_run": dry_run}
         self.history.append(res)
-        print(f"Mock SHELL: {'DRY_RUN' if dry_run else 'RUN'} {command}")
+        log.info("shell_run", command=command, dry_run=dry_run)
         return res
 
 

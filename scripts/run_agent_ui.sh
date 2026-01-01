@@ -8,6 +8,11 @@ cd "${ROOT_DIR}"
 PORT="${PORT:-8000}"
 HOST="${HOST:-127.0.0.1}"
 URL="http://${HOST}:${PORT}/ui"
+# Defaults: prefer real OpenAI if key is set; else local/fake
+if [[ -z "${OPENAI_API_KEY}" ]]; then
+  export EMBEDDING_BACKEND="${EMBEDDING_BACKEND:-local}"
+  export USE_FAKE_OPENAI="${USE_FAKE_OPENAI:-1}"
+fi
 
 # Test mode for CI: just import and exit
 if [[ "${RUN_AGENT_TEST}" == "1" ]]; then

@@ -16,3 +16,8 @@ env/
 .mypy_cache/
 *.crt
 *.pem
+.cache/
+.embeddings_cache/
+log_dump.txt
+log_snapshots/
+*.pid

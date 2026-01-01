@@ -44,18 +44,22 @@ flowchart TB
 - `src/personal_assistant/cpms_adapter.py`: Thin wrapper around the published `cpms-client` package (no local cpms repo needed).
 - `main.py`: Demo entrypoint that prefers Arango, then Chroma, then in-memory mock.
 
-## Setup
-1) Install dependencies (Poetry or pip):
-   - `pip install -r requirements.txt` or `poetry install`
+## Setup (Poetry)
+1) Install dependencies with Poetry:
+   - `poetry install`
+   - For web/vision tooling: `poetry run playwright install --with-deps chromium`
 2) Environment (put these in `.env.local` — no quotes):
    - `OPENAI_API_KEY=your-key`
    - optional `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`)
 3) Optional Arango memory:
    - `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`
    - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev.
-4) Run the demo: `python main.py` (prefers Arango → Chroma at `.chroma/` → in-memory mock).
-5) Run tests: `pytest` (a conftest pins the repo root on `sys.path`; 33 passing, 2 skipped in CI-like runs).
-6) Run the HTTP service: `uvicorn src.personal_assistant.service:main --reload` or `poetry run agent-service`. Open `http://localhost:8000/ui` for chat/logs/runs tabs.
+4) Optional local embeddings (no OpenAI needed):
+   - Run `./scripts/install_local_embedder.sh` once (installs `sentence-transformers`).
+   - Set `EMBEDDING_BACKEND=local`; optionally `LOCAL_EMBED_MODEL` to force a specific model, or `LOCAL_EMBED_DIM` to control the hash-fallback size.
+5) Run the demo: `python main.py` (prefers Arango → Chroma at `.chroma/` → in-memory mock).
+6) Run tests: `poetry run pytest` (a conftest pins the repo root on `sys.path`; currently 90+ passing tests, env-guarded for Playwright/Arango).
+7) Run the HTTP service: `uvicorn src.personal_assistant.service:main --reload` or `poetry run agent-service`. Open `http://localhost:8000/ui` for chat/logs/runs tabs.
 
 ## Current State
 - Agent loop exercises tasks/calendar/contacts/web tools with mock backends and logs lifecycle events via an event bus.

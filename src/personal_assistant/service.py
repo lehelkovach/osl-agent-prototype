@@ -159,7 +159,7 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         try:
             result = agent.execute_request(body.message)
         except Exception as exc:
-            log.error("chat_error", error=str(exc))
+            log.error("chat_error", error=str(exc), exc_info=True)
             chat_history.append({"role": "user", "content": body.message})
             chat_history.append({"role": "assistant", "content": "Error handling request."})
             return {"plan": {"error": str(exc)}, "results": {"status": "error"}, "events": []}
