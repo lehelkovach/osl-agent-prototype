@@ -280,8 +280,30 @@ def main():
     agent = default_agent_from_env()
     app = build_app(agent)
     port = int(os.getenv("PORT", "8000"))
-    log.info("starting_service", port=port)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    host = os.getenv("HOST", "0.0.0.0")
+    debug = os.getenv("DEBUG", "").lower() in ("1", "true", "yes")
+    log_level = os.getenv("LOG_LEVEL", "info")
+    log.info(
+        "starting_service",
+        host=host,
+        port=port,
+        debug=debug,
+        log_level=log_level,
+        embedding_backend=os.getenv("EMBEDDING_BACKEND", "openai"),
+        use_fake_openai=os.getenv("USE_FAKE_OPENAI") == "1",
+        use_cpms=os.getenv("USE_CPMS_FOR_PROCS") == "1",
+    )
+    uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
+
+
+def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, log_level: str = "info"):
+    """Programmatic entrypoint used by scripts."""
+    configure_logging()
+    log = get_logger("service")
+    agent = default_agent_from_env()
+    app = build_app(agent)
+    log.info("starting_service", host=host, port=port, debug=debug, log_level=log_level)
+    uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
 
 
 if __name__ == "__main__":
