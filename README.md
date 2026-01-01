@@ -77,6 +77,7 @@ flowchart TB
 - Persist event/log streams to storage and broaden the UI to show live streams + memory/task views.
 - Add richer RAG prompts so the agent can synthesize/reuse stored DAG procedures (e.g., LinkedIn recruiter workflows) and learn from prior embeddings.
 - Split the KSG module into its own package when ready (per goal of carving it into a subproject).
+- Evaluate hosting options for local LLMs: free persistent GPU endpoints are effectively unavailable; small CPU models (4/5-bit 7–8B) are slow on free-tier Oracle/Ampere. Plan for paid hosted GPUs (HF/Together/etc.) or larger self-hosted hardware when moving off OpenAI.
 
 ## Development Roadmap / Not Yet Implemented
 - Production-grade Playwright/Appium flows with retries/timeouts and real vision-assisted locators; live end-to-end tests beyond fixtures.
