@@ -11,12 +11,14 @@ from src.personal_assistant.logging_setup import configure_logging, get_logger
 
 from src.personal_assistant.agent import PersonalAssistantAgent
 from src.personal_assistant.events import EventBus
-from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockContactsTools
+from src.personal_assistant.mock_tools import MockMemoryTools, MockCalendarTools, MockTaskTools, MockContactsTools, MockWebTools, MockShellTools
 from dotenv import load_dotenv
 from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.cpms_adapter import CPMSAdapter, CPMSNotInstalled
 from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
 from src.personal_assistant.local_embedder import LocalEmbedder
+from src.personal_assistant.web_tools import PlaywrightWebTools
+from src.personal_assistant.shell_executor import RealShellTools
 
 
 class ChatRequest(BaseModel):
@@ -225,6 +227,7 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
     embedding_backend = os.getenv("EMBEDDING_BACKEND", cfg.get("embedding_backend", "openai"))
     use_fake_openai = os.getenv("USE_FAKE_OPENAI", str(cfg.get("use_fake_openai", False))).lower() in ("1", "true", "yes")
     use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS", str(cfg.get("use_cpms_for_procs", False))).lower() in ("1", "true", "yes")
+    use_playwright = os.getenv("USE_PLAYWRIGHT", str(cfg.get("use_playwright", False))).lower() in ("1", "true", "yes")
     arango_cfg = cfg.get("arango", {}) if isinstance(cfg, dict) else {}
     chroma_cfg = cfg.get("chroma", {}) if isinstance(cfg, dict) else {}
     log.info(
@@ -233,6 +236,7 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
         use_fake_openai=use_fake_openai,
         use_local_embed=embedding_backend.lower() == "local",
         use_cpms=use_cpms_for_procs,
+        use_playwright=use_playwright,
         arango_url=os.getenv("ARANGO_URL", arango_cfg.get("url", "")),
         chroma_enabled=bool(os.getenv("ARANGO_URL") == "" and os.getenv("CHROMA_PATH", chroma_cfg.get("path", ".chroma"))),
     )
@@ -285,6 +289,19 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
         _embed = lambda text: None
 
     procedure_builder = ProcedureBuilder(memory, embed_fn=_embed)
+    # Select web and shell tools
+    web_tools = None
+    shell_tools = None
+    if use_playwright:
+        try:
+            web_tools = PlaywrightWebTools(headless=True)
+        except Exception as exc:
+            log.warning("playwright_unavailable_falling_back_to_mock", error=str(exc))
+            web_tools = MockWebTools()
+    else:
+        web_tools = MockWebTools()
+    shell_tools = RealShellTools()
+
     cpms_adapter = None
     if use_cpms_for_procs:
         try:
@@ -296,6 +313,8 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
         calendar,
         tasks,
         contacts=contacts,
+        web=web_tools,
+        shell=shell_tools,
         procedure_builder=procedure_builder,
         cpms=cpms_adapter,
         openai_client=openai_client,
