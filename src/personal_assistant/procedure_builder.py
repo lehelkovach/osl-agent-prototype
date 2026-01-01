@@ -25,6 +25,7 @@ class ProcedureBuilder:
         dependencies: Optional[List[Tuple[int, int]]] = None,
         guards: Optional[Dict[int, str]] = None,
         provenance: Optional[Provenance] = None,
+        extra_props: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create a Procedure node, its Step nodes, and dependency edges.
@@ -46,11 +47,10 @@ class ProcedureBuilder:
         if self._has_cycle(len(steps), dependencies):
             raise ValueError("Procedure dependencies must be acyclic")
 
-        proc_node = Node(
-            kind="Procedure",
-            labels=["procedure"],
-            props={"title": title, "description": description},
-        )
+        proc_props = {"title": title, "description": description}
+        if extra_props:
+            proc_props.update(extra_props)
+        proc_node = Node(kind="Procedure", labels=["procedure"], props=proc_props)
         proc_node.llm_embedding = self.embed_fn(title)
         self.memory.upsert(proc_node, prov, embedding_request=True)
 

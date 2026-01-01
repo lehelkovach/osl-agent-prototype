@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 from openai import OpenAI
 
@@ -22,10 +22,18 @@ class OpenAIClient:
             "OPENAI_EMBEDDING_MODEL", "text-embedding-3-large"
         )
 
-    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.0,
+        response_format: Optional[Dict[str, Any]] = None,
+    ) -> str:
         try:
             response = self.client.chat.completions.create(
-                model=self.chat_model, messages=messages, temperature=temperature
+                model=self.chat_model,
+                messages=messages,
+                temperature=temperature,
+                response_format=response_format,
             )
             return response.choices[0].message.content
         except Exception as exc:
@@ -61,9 +69,13 @@ class FakeOpenAIClient:
         self.chat_response = chat_response
         self.embedding = embedding or [0.0, 0.0, 0.0]
         self.last_messages: Optional[List[Dict[str, str]]] = None
+        self.last_response_format: Optional[Dict[str, Any]] = None
+        self.last_temperature: Optional[float] = None
 
-    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.0) -> str:
+    def chat(self, messages: List[Dict[str, str]], temperature: float = 0.0, response_format: Optional[Dict[str, Any]] = None) -> str:
         self.last_messages = messages
+        self.last_response_format = response_format
+        self.last_temperature = temperature
         return self.chat_response
 
     def embed(self, text: str) -> List[float]:

@@ -22,6 +22,7 @@ class TestProcedureBuilder(unittest.TestCase):
             steps=steps,
             dependencies=deps,
             guards=guards,
+            extra_props={"tested": True},
         )
 
         proc_uuid = res["procedure_uuid"]

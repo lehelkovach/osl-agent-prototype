@@ -8,12 +8,13 @@ from uuid import uuid4
 
 from src.personal_assistant.prompts import SYSTEM_PROMPT, DEVELOPER_PROMPT
 from src.personal_assistant.tools import MemoryTools, CalendarTools, TaskTools, WebTools, ShellTools
-from src.personal_assistant.models import Node, Provenance
+from src.personal_assistant.models import Edge, Node, Provenance
 from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
 from src.personal_assistant.task_queue import TaskQueueManager
 from src.personal_assistant.events import EventBus, NullEventBus
 from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
+from src.personal_assistant.knowshowgo import KnowShowGoAPI
 from src.personal_assistant.form_filler import FormDataRetriever
 from src.personal_assistant.logging_setup import get_logger
 
@@ -33,6 +34,7 @@ class PersonalAssistantAgent:
         openai_client: Optional[OpenAIClient] = None,
         event_bus: Optional[EventBus] = None,
         use_cpms_for_procs: Optional[bool] = None,
+        ksg: Optional[KnowShowGoAPI] = None,
     ):
         self.memory = memory
         self.calendar = calendar
@@ -49,6 +51,7 @@ class PersonalAssistantAgent:
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
         self.form_retriever = FormDataRetriever(memory)
+        self.ksg = ksg or KnowShowGoAPI(memory)
         self.log = get_logger("agent")
         # Flag to route procedure ops through CPMS if present
         if use_cpms_for_procs is None:
@@ -80,7 +83,7 @@ class PersonalAssistantAgent:
 
         # 2. Retrieve Memory (+ optional embedding) and supporting context
         query_embedding = self._embed_text(user_request)
-        top_k = 25 if intent == "inform" else 5
+        top_k = 50 if intent == "inform" else 5
         memory_results = self.memory.search(
             user_request, top_k=top_k, query_embedding=query_embedding
         )
@@ -125,8 +128,52 @@ class PersonalAssistantAgent:
         )
         contacts_context = self.contacts.list() if self.contacts else []
 
+        # Direct note recall for concept-named queries
+        if intent == "inform" and "note" in user_request.lower():
+            target_name = None
+            for token in user_request.replace("?", " ").split():
+                if token.lower().startswith("concept-"):
+                    target_name = token
+                    break
+            if target_name:
+                try:
+                    all_hits = self.memory.search("", top_k=500, filters=None, query_embedding=None)
+                except Exception:
+                    all_hits = []
+                for item in all_hits:
+                    props = item.get("props", {}) if isinstance(item, dict) else {}
+                    if props.get("name") == target_name and isinstance(props.get("note"), str):
+                        note_val = props["note"]
+                        plan = {
+                            "intent": "inform",
+                            "fallback": True,
+                            "raw_llm": note_val,
+                            "steps": [],
+                            "trace_id": provenance.trace_id,
+                        }
+                        self._log_message("assistant", note_val, provenance)
+                        self._emit(
+                            "plan_ready",
+                            {
+                                "plan": plan,
+                                "raw_llm": note_val,
+                                "trace_id": provenance.trace_id,
+                                "fallback": True,
+                            },
+                        )
+                        execution_results = {"status": "no action taken", "trace_id": provenance.trace_id}
+                        self._emit(
+                            "execution_completed",
+                            {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
+                        )
+                        return {"plan": plan, "execution_results": execution_results}
+
         # Quick memory answer path for simple inform queries (e.g., "what is my name?")
-        mem_answer = self._answer_from_memory(intent, memory_results)
+        recall_keywords = ("recall", "steps", "procedure", "workflow", "run", "execute")
+        recall_like = any(k in user_request.lower() for k in recall_keywords)
+        note_like = any(k in user_request.lower() for k in ("note", "concept", "about"))
+        skip_memory_answer = recall_like and bool(proc_matches) and not note_like
+        mem_answer = None if skip_memory_answer else self._answer_from_memory(intent, memory_results, user_request)
         if mem_answer:
             plan = {
                 "intent": "inform",
@@ -222,6 +269,12 @@ class PersonalAssistantAgent:
 
         # 4. Execute via Tools
         execution_results = self._execute_plan(plan, provenance)
+        # Persist executed plan as a Procedure with basic success/failure stats
+        try:
+            self._persist_procedure_run(user_request, plan, execution_results, provenance)
+        except Exception:
+            # Persistence should not break the main loop
+            pass
         self._emit(
             "execution_completed",
             {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
@@ -269,6 +322,10 @@ class PersonalAssistantAgent:
                 "workflow",
                 "automation",
                 "web",
+                "recall",
+                "steps",
+                "execute",
+                "run",
             ]
         ):
             return "web_io"
@@ -286,20 +343,28 @@ class PersonalAssistantAgent:
         procedure_matches: list,
     ) -> (Dict[str, Any], Optional[str]):
         """Generates a plan by calling the LLM for structured JSON. Returns plan and raw LLM text."""
-        def _norm(obj):
-            if isinstance(obj, list):
-                return [_norm(x) for x in obj]
+        def _prune(obj):
             if isinstance(obj, dict):
-                return {k: _norm(v) for k, v in obj.items()}
+                pruned = {}
+                for k, v in obj.items():
+                    if k in ("llm_embedding", "embedding", "vector"):
+                        continue
+                    pruned[k] = _prune(v)
+                return pruned
+            if isinstance(obj, list):
+                return [_prune(x) for x in obj[:5]]
             if hasattr(obj, "__dict__"):
-                return _norm(obj.__dict__)
+                return _prune(obj.__dict__)
             return obj
 
-        mem_payload = _norm(memory_results)
-        proc_payload = _norm(procedure_matches)
-        tasks_payload = _norm(tasks_context)
-        calendar_payload = _norm(calendar_context)
-        contacts_payload = _norm(contacts_context)
+        def _norm(obj):
+            return _prune(obj)
+
+        mem_payload = _norm(memory_results[:5])
+        proc_payload = _norm(procedure_matches[:5])
+        tasks_payload = _norm(tasks_context[:5])
+        calendar_payload = _norm(calendar_context[:5])
+        contacts_payload = _norm(contacts_context[:5])
         messages = [
             {"role": "system", "content": self.system_prompt},
             {"role": "system", "content": self.developer_prompt},
@@ -322,14 +387,17 @@ class PersonalAssistantAgent:
             },
         ]
         try:
-            llm_text = self.openai_client.chat(messages, temperature=0.0)
-            plan_obj = json.loads(llm_text)
+            llm_text = self.openai_client.chat(
+                messages, temperature=0.0, response_format={"type": "json_object"}
+            )
+            plan_obj = self._parse_plan(llm_text, intent)
             plan_obj["raw_llm"] = llm_text
             self.log.debug(
                 "llm_plan_success",
                 module="agent",
                 function="_generate_plan",
                 intent=intent,
+                raw_llm=llm_text,
             )
             return plan_obj, llm_text
         except Exception as e:
@@ -338,6 +406,7 @@ class PersonalAssistantAgent:
                 "llm_error",
                 {
                     "error": str(e),
+                    "raw_llm": locals().get("llm_text"),
                     "trace_id": None,
                     "ts": datetime.now(timezone.utc).isoformat(),
                 },
@@ -349,8 +418,39 @@ class PersonalAssistantAgent:
                 function="_generate_plan",
                 intent=intent,
                 error=str(e),
+                raw_llm=llm_text,
             )
             return {"intent": intent, "steps": [], "error": str(e)}, llm_text
+
+    def _parse_plan(self, llm_text: str, intent: str) -> Dict[str, Any]:
+        """
+        Parse LLM output using the commandtype/metadata contract.
+        Accepts:
+          - {"commandtype":"procedure","metadata":{"steps":[...]}}
+          - legacy {"intent":..., "steps":[...]}
+        """
+        try:
+            obj = json.loads(llm_text)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to parse plan JSON: {exc}")
+        # Legacy path
+        if "steps" in obj and "intent" in obj:
+            obj.setdefault("intent", intent)
+            return obj
+        # New commandtype path
+        if obj.get("commandtype") == "procedure":
+            steps = obj.get("metadata", {}).get("steps", [])
+            converted_steps = []
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                tool = step.get("commandtype")
+                params = step.get("metadata", {}) or {}
+                comment = step.get("comment", "")
+                if tool:
+                    converted_steps.append({"tool": tool, "params": params, "comment": comment})
+            return {"intent": intent, "steps": converted_steps}
+        raise RuntimeError("Unrecognized plan shape")
 
     def _execute_plan(self, plan: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
         """Executes each step in the plan by calling the appropriate tool."""
@@ -540,6 +640,27 @@ class PersonalAssistantAgent:
                     res = {"status": "success", "procedures": self.procedure_builder.search_procedures(**params)}
                 else:
                     res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                results.append(res)
+            elif tool_name == "ksg.create_prototype":
+                try:
+                    proto_uuid = self.ksg.create_prototype(**params)
+                    res = {"status": "success", "prototype_uuid": proto_uuid}
+                except Exception as exc:
+                    res = {"status": "error", "error": str(exc)}
+                results.append(res)
+            elif tool_name == "ksg.create_concept":
+                try:
+                    concept_params = params.copy()
+                    if not concept_params.get("prototype_uuid"):
+                        # best-effort: use first prototype in memory
+                        for node in self.memory.nodes.values():
+                            if getattr(node, "kind", None) == "Prototype":
+                                concept_params["prototype_uuid"] = node.uuid
+                                break
+                    concept_uuid = self.ksg.create_concept(**concept_params)
+                    res = {"status": "success", "concept_uuid": concept_uuid}
+                except Exception as exc:
+                    res = {"status": "error", "error": str(exc)}
                 results.append(res)
             elif tool_name == "form.autofill":
                 res = self._autofill_form(params)
@@ -787,6 +908,120 @@ class PersonalAssistantAgent:
         fallback = self._fallback_plan(intent, user_request)
         return fallback or {"intent": intent, "steps": [], "fallback": True}
 
+    def _persist_procedure_run(
+        self,
+        user_request: str,
+        plan: Dict[str, Any],
+        execution_results: Dict[str, Any],
+        provenance: Provenance,
+    ) -> None:
+        """
+        Store an executed plan as a Procedure with simple success/failure stats.
+        """
+        if not self.procedure_builder:
+            return
+        # Avoid duplicating when plan explicitly created a procedure
+        if any(step.get("tool") == "procedure.create" for step in plan.get("steps", [])):
+            return
+        # Try to find an existing procedure by embedding/text match
+        existing_proc = self._find_existing_procedure(user_request)
+        proc_uuid = existing_proc.get("uuid") if existing_proc else None
+        steps = []
+        for idx, step in enumerate(plan.get("steps", [])):
+            title = step.get("tool") or f"step-{idx}"
+            steps.append(
+                {
+                    "title": title,
+                    "payload": step.get("params", {}),
+                    "order": idx,
+                }
+            )
+        if not steps:
+            return
+        success = execution_results.get("status") == "completed"
+        run_node = Node(
+            kind="ProcedureRun",
+            labels=["procedure_run"],
+            props={
+                "goal": user_request,
+                "status": execution_results.get("status"),
+                "success": success,
+                "trace_id": provenance.trace_id,
+                "ts": provenance.ts,
+            },
+        )
+        run_node.llm_embedding = self._embed_text(user_request)
+        self.memory.upsert(run_node, provenance, embedding_request=True)
+        self._emit_memory_upsert(run_node, provenance)
+
+        if not proc_uuid:
+            extra_props = {
+                "tested": True,
+                "success_count": 1 if success else 0,
+                "failure_count": 0 if success else 1,
+                "last_status": execution_results.get("status"),
+                "last_trace_id": provenance.trace_id,
+                "goal": user_request,
+            }
+            created = self.procedure_builder.create_procedure(
+                title=user_request[:120],
+                description=user_request,
+                steps=steps,
+                dependencies=[],
+                guards=None,
+                provenance=provenance,
+                extra_props=extra_props,
+            )
+            proc_uuid = created.get("procedure_uuid")
+        else:
+            # Update success/failure counters on existing procedure
+            try:
+                proc_node = self.memory.nodes.get(proc_uuid)
+                if proc_node:
+                    sc = int(proc_node.props.get("success_count", 0))
+                    fc = int(proc_node.props.get("failure_count", 0))
+                    if success:
+                        sc += 1
+                    else:
+                        fc += 1
+                    proc_node.props.update(
+                        {
+                            "tested": True,
+                            "success_count": sc,
+                            "failure_count": fc,
+                            "last_status": execution_results.get("status"),
+                            "last_trace_id": provenance.trace_id,
+                            "goal": user_request,
+                        }
+                    )
+                    self.memory.upsert(proc_node, provenance, embedding_request=False)
+            except Exception:
+                pass
+        if proc_uuid:
+            # Link run to procedure
+            try:
+                self.memory.upsert(
+                    Edge(
+                        from_node=run_node.uuid,
+                        to_node=proc_uuid,
+                        rel="run_of",
+                        props={"success": success, "ts": provenance.ts},
+                    ),
+                    provenance,
+                    embedding_request=False,
+                )
+            except Exception:
+                pass
+
+    def _find_existing_procedure(self, goal: str) -> Optional[Dict[str, Any]]:
+        if not self.procedure_builder:
+            return None
+        try:
+            matches = self.procedure_builder.search_procedures(goal, top_k=1)
+        except Exception:
+            return None
+        return matches[0] if matches else None
+
     def _log_message(self, role: str, content: str, provenance: Provenance) -> None:
         """Persist conversation messages with embeddings into history."""
         if not content:
@@ -807,10 +1042,75 @@ class PersonalAssistantAgent:
             # Do not fail the agent loop on logging errors
             pass
 
-    def _answer_from_memory(self, intent: str, memory_results: List[Dict[str, Any]]) -> Optional[str]:
+    def _answer_from_memory(
+        self, intent: str, memory_results: List[Dict[str, Any]], user_request: Optional[str] = None
+    ) -> Optional[str]:
         """Simple recall: if intent is inform and we have memory hits, surface the top match."""
         if intent != "inform" or not memory_results:
             return None
+        lower_q = user_request.lower() if user_request else ""
+        bias_procedure = any(
+            kw in lower_q for kw in ("procedure", "steps", "workflow", "execute", "run", "recall", "credential", "login")
+        )
+        # If the query asks for a note or concept, surface note/description first
+        bias_note = any(kw in lower_q for kw in ("note", "concept", "about"))
+        if bias_note:
+            target_name = None
+            if user_request:
+                for token in user_request.replace("?", " ").split():
+                    if token.lower().startswith("concept-"):
+                        target_name = token
+                        break
+            for item in memory_results:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                if target_name and props.get("name") == target_name and isinstance(props.get("note"), str):
+                    return props["note"]
+                for key in ("note", "description", "content"):
+                    val = props.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+            # Fallback: query concepts directly
+            try:
+                concept_hits = self.memory.search("", top_k=100, filters={"kind": "Concept"}, query_embedding=None)
+            except Exception:
+                concept_hits = []
+            for item in concept_hits:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                if target_name and props.get("name") == target_name and isinstance(props.get("note"), str):
+                    return props["note"]
+                for key in ("note", "description", "content"):
+                    val = props.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+            # Last resort: scan all nodes for a note/description/content
+            try:
+                all_hits = self.memory.search("", top_k=500, filters=None, query_embedding=None)
+            except Exception:
+                all_hits = []
+            for item in all_hits:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                if target_name and props.get("name") == target_name and isinstance(props.get("note"), str):
+                    return props["note"]
+                for key in ("note", "description", "content"):
+                    val = props.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+        if bias_procedure:
+            for item in memory_results:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                kind = item.get("kind") if isinstance(item, dict) else getattr(item, "kind", None)
+                if kind == "Procedure":
+                    title = props.get("title") or props.get("name")
+                    desc = props.get("description")
+                    if title and desc:
+                        return f"Procedure '{title}': {desc}"
+                    if title:
+                        return f"Procedure '{title}' recalled."
+            for item in memory_results:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                for key in ("note", "description", "content"):
+                    if isinstance(props.get(key), str) and props.get(key).strip():
+                        return props.get(key).strip()
         # First, return immediately if a Person/Name node has an explicit name field.
         for item in memory_results:
             props = item.get("props", {}) if isinstance(item, dict) else {}

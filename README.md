@@ -32,7 +32,7 @@ flowchart TB
 ## Components
 - `src/personal_assistant/agent.py`: Core loop (intent → memory search → LLM JSON plan → tool execution → memory upserts + queue enqueue).
 - `src/personal_assistant/chroma_memory.py` / `arango_memory.py`: `MemoryTools` backed by ChromaDB or ArangoDB (graph + embeddings).
-- `src/personal_assistant/ksg.py`: Minimal KSG store that seeds property defs, prototypes (List, DAG, Tag, etc.), and seed objects (self/assistant/home/work/language).
+- `src/personal_assistant/ksg.py`: Minimal KSG store that seeds property defs, prototypes (Object, List, DAG, Procedure, Tag, etc.), and seed objects (self/assistant/home/work/language).
 - `src/personal_assistant/task_queue.py`: Prioritized queue with enqueue/update operations that also persist to memory.
 - `src/personal_assistant/scheduler.py`: Time-rule evaluator that enqueues tasks (optionally with DAG payloads) and persists them with embeddings.
 - `src/personal_assistant/versioned_document.py`: Versioned JSON metadata store linked to concepts with embeddings and version chains.
@@ -53,7 +53,9 @@ flowchart TB
    - optional `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`)
 3) Optional Arango memory:
    - `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`
-   - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev.
+   - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev and ccurrently bugged so just dont include it with arango cloud's cert which is
+   presently setup in the project.
+   - `.env.local` is not committed; populate it locally with your ARANGO_* and OPENAI_* values (the current developer setup has these set there).
 4) Optional local embeddings (no OpenAI needed):
    - Run `./scripts/install_local_embedder.sh` once (installs `sentence-transformers`).
    - Set `EMBEDDING_BACKEND=local`; optionally `LOCAL_EMBED_MODEL` (or `config/default.yaml: local_embed_model`) to force a specific model, or `LOCAL_EMBED_DIM` to control the hash-fallback size.
@@ -79,6 +81,12 @@ flowchart TB
 - Split the KSG module into its own package when ready (per goal of carving it into a subproject).
 - Evaluate hosting options for local LLMs: free persistent GPU endpoints are effectively unavailable; small CPU models (4/5-bit 7–8B) are slow on free-tier Oracle/Ampere. Plan for paid hosted GPUs (HF/Together/etc.) or larger self-hosted hardware when moving off OpenAI.
 - Comms roadmap: add Twilio (SMS/voice) support and a TTS/STT pipeline. Consider integrating with an Asterisk/voice service API to enable automated outbound calls and logging of call transcripts.
+- Web automation roadmap:
+  - Use the Playwright-backed WebTools (enable with `USE_PLAYWRIGHT=1`) so the exposed web commands in prompts actually hit live pages: screenshot, get_dom, fill, click, wait_for. Capture paths land in `/tmp/agent-captures` by default.
+  - Teach the agent to derive/store/reuse procedures for logins and form fills: serialize successful steps as DAG/Procedure nodes, embed fingerprints (labels/placeholders/types/layout), and reuse via RAG when confidence ≥0.8.
+  - Incorporate CPMS for form element matching: build observations from Playwright snapshots, call CPMS match_pattern, and map assignments to selectors before filling.
+  - Add scheduler/queue integration: generated procedures should enqueue as tasks and execute step-by-step with feedback; failed steps trigger patch/retry and updated procedure storage.
+  - Vault/KnowShowGo: remember formdata/credentials provided in chat; on new login tasks, query vault first, then plan/fill/submit; store updated form exemplars and selectors on success.
 
 ## Development Roadmap / Not Yet Implemented
 - Production-grade Playwright/Appium flows with retries/timeouts and real vision-assisted locators; live end-to-end tests beyond fixtures.

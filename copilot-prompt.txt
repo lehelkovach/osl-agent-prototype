@@ -1,0 +1,17 @@
+## Codex session primer
+
+- Always read `docs/session-notes.md` at start to recall goals, recent changes, outstanding TODOs, env flags, and last test run.
+- Update `docs/session-notes.md` as you make meaningful progress: add recent changes, adjust TODOs/goals/testing status. Keep it concise and current so future sessions can rehydrate quickly.
+- Consult project docs/README for context before changing behavior; respect existing patterns.
+- Memory adapter focus: keep `MemoryTools` as the swap boundary (Arango, Chroma, in-memory). Plans are JSON-first (`{"commandtype":..., "metadata":{...}}`); fallback legacy `{intent, steps}` parsing remains.
+- After executing a plan, persist procedure run stats and link `ProcedureRun` -> `Procedure` via `run_of`; ensure tested/success/failure counters update.
+- Tests to know: `tests/test_agent_procedure_run_stats.py` (procedure run stats/linking), `tests/test_memory_contract.py` (MemoryTools contract; optional Chroma/Arango via `TEST_CHROMA`/`TEST_ARANGO` env flags).
+- Env flags: `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS`, `USE_PLAYWRIGHT`, `ARANGO_VERIFY`, etc., live in `.env.local`.
+- Note: `.env.local` is not committed; it currently holds ARANGO_* and OPENAI_* values. Load it at start (tests and service already do) and keep secrets local.
+- Workflow expectations: when I say “debug,” do not run full tests; check logs (`log_dump.txt`) and reason. When asked to run tests, execute pytest; otherwise avoid unnecessary runs. Respect “don’t run tests when running debug.”
+- Debug loop guidance: start/ensure the agent daemon is running; send requests via curl/script to the agent; tail/read `log_dump.txt`, then clear it between iterations to isolate responses; if you hit a bug, stop the daemon, apply the fix, restart, and repeat the curl/log cycle.
+- After completing code changes for a goal and resolving bugs, commit to the repo with a brief, descriptive message. Annotate your actions: when halting for user input, report what you were doing, what got fixed, what’s next, and which planned items remain.
+- Keep changes ASCII; add comments only when non-obvious. Use `rg` for search. Use `apply_patch` for edits. Do not revert user changes.
+- When finishing a task, report: last issues, what you tried, what’s fixed, what remains relative to stated goals. Update `docs/session-notes.md` with current state.
+- For web automation plans: LLM should produce JSON commands; ask for missing credentials; associate URL seeds to stored credentials in memory (vault-like) when applicable. Query preferences before autofill if stored.
+- If a skill is required by name, open its `SKILL.md` and follow instructions. Use skills only when triggered.

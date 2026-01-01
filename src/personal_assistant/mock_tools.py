@@ -162,22 +162,28 @@ class MockWebTools(WebTools):
     def __init__(self):
         self.history: List[Dict[str, Any]] = []
 
+    def _safe_log(self, msg: str):
+        try:
+            print(msg)
+        except BrokenPipeError:
+            pass
+
     def get(self, url: str) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "body": f"<html><body>Mock GET {url}</body></html>"}
         self.history.append({"method": "GET", "url": url, "response": response})
-        print(f"Mock GET: {url}")
+        self._safe_log(f"Mock GET: {url}")
         return response
 
     def post(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "body": {"received": payload}}
         self.history.append({"method": "POST", "url": url, "payload": payload, "response": response})
-        print(f"Mock POST: {url} payload={payload}")
+        self._safe_log(f"Mock POST: {url} payload={payload}")
         return response
 
     def screenshot(self, url: str) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "image": f"screenshot-of-{url}"}
         self.history.append({"method": "SCREENSHOT", "url": url, "response": response})
-        print(f"Mock SCREENSHOT: {url}")
+        self._safe_log(f"Mock SCREENSHOT: {url}")
         return response
 
     def get_dom(self, url: str) -> Dict[str, Any]:
@@ -190,7 +196,7 @@ class MockWebTools(WebTools):
             "screenshot_base64": screenshot_b64,
         }
         self.history.append({"method": "GET_DOM", "url": url, "response": response})
-        print(f"Mock GET_DOM: {url}")
+        self._safe_log(f"Mock GET_DOM: {url}")
         return response
 
     def locate_bounding_box(self, url: str, query: str) -> Dict[str, Any]:
@@ -201,31 +207,31 @@ class MockWebTools(WebTools):
             "bbox": {"x": 10, "y": 20, "width": 100, "height": 20},
         }
         self.history.append({"method": "LOCATE_BBOX", "url": url, "query": query, "response": response})
-        print(f"Mock LOCATE_BBOX: {url} {query}")
+        self._safe_log(f"Mock LOCATE_BBOX: {url} {query}")
         return response
 
     def click_xy(self, url: str, x: int, y: int) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "action": "click_xy", "x": x, "y": y}
         self.history.append({"method": "CLICK_XY", "url": url, "x": x, "y": y, "response": response})
-        print(f"Mock CLICK_XY: {url} ({x},{y})")
+        self._safe_log(f"Mock CLICK_XY: {url} ({x},{y})")
         return response
 
     def click_selector(self, url: str, selector: str) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "action": "click_selector", "selector": selector}
         self.history.append({"method": "CLICK_SELECTOR", "url": url, "selector": selector, "response": response})
-        print(f"Mock CLICK_SELECTOR: {url} {selector}")
+        self._safe_log(f"Mock CLICK_SELECTOR: {url} {selector}")
         return response
 
     def click_xpath(self, url: str, xpath: str) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "action": "click_xpath", "xpath": xpath}
         self.history.append({"method": "CLICK_XPATH", "url": url, "xpath": xpath, "response": response})
-        print(f"Mock CLICK_XPATH: {url} {xpath}")
+        self._safe_log(f"Mock CLICK_XPATH: {url} {xpath}")
         return response
 
     def fill(self, url: str, selector: str, text: str) -> Dict[str, Any]:
         response = {"status": 200, "url": url, "action": "fill", "selector": selector, "text": text}
         self.history.append({"method": "FILL", "url": url, "selector": selector, "text": text, "response": response})
-        print(f"Mock FILL: {url} {selector}={text}")
+        self._safe_log(f"Mock FILL: {url} {selector}={text}")
         return response
 
     def wait_for(self, url: str, selector: str, timeout_ms: int = 5000) -> Dict[str, Any]:

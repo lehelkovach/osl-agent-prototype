@@ -52,6 +52,7 @@ DEFAULT_PROTOTYPES = [
     "Document",
     "Device",
     "PreferenceRule",
+    "Object",
     "List",
     "DAG",
     "Tag",

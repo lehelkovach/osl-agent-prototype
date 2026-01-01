@@ -59,8 +59,9 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             img_bytes = page.screenshot(full_page=True)
+            img_b64 = base64.b64encode(img_bytes).decode("ascii")
             path = self._maybe_save(u, img_bytes, suffix="screenshot.png")
-            return {"status": response.status if response else 0, "url": u, "image_bytes": img_bytes, "path": path}
+            return {"status": response.status if response else 0, "url": u, "image_base64": img_b64, "path": path}
 
         return self._with_page(url, action)
 
