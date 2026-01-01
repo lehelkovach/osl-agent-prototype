@@ -77,7 +77,7 @@ start_agent() {
   # Run uvicorn programmatically to keep our logging config (log_config=None).
   # Disable access log to avoid BrokenPipe noise on reload.
   (
-    PYTHONUNBUFFERED=1 python - <<PY
+    PYTHONUNBUFFERED=1 python3 - <<PY
 import uvicorn
 from src.personal_assistant import service
 assert service.app is not None, "app failed to initialize"
