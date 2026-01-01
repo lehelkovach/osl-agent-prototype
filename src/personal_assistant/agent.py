@@ -257,6 +257,21 @@ class PersonalAssistantAgent:
             return "schedule"
         elif "remember" in text:
             return "remember"
+        elif any(
+            k in text
+            for k in [
+                "login",
+                "log in",
+                "log into",
+                "sign in",
+                "sign into",
+                "procedure",
+                "workflow",
+                "automation",
+                "web",
+            ]
+        ):
+            return "web_io"
         else:
             return "inform"
 
@@ -431,18 +446,22 @@ class PersonalAssistantAgent:
                 results.append(res)
             elif tool_name == "web.locate_bounding_box" and self.web:
                 res = self.web.locate_bounding_box(**params)
+                self._record_form_element(params, provenance, action="locate_bounding_box")
                 results.append(res)
             elif tool_name == "web.click_selector" and self.web:
                 res = self.web.click_selector(**params)
+                self._record_form_element(params, provenance, action="click_selector")
                 results.append(res)
             elif tool_name == "web.click_xpath" and self.web:
                 res = self.web.click_xpath(**params)
+                self._record_form_element(params, provenance, action="click_xpath")
                 results.append(res)
             elif tool_name == "web.click_xy" and self.web:
                 res = self.web.click_xy(**params)
                 results.append(res)
             elif tool_name == "web.fill" and self.web:
                 res = self.web.fill(**params)
+                self._record_form_element(params, provenance, action="fill")
                 results.append(res)
             elif tool_name == "web.wait_for" and self.web:
                 res = self.web.wait_for(**params)
@@ -626,6 +645,35 @@ class PersonalAssistantAgent:
             filled.append({"field": field, "value": val, "selector": selector, "result": res})
         return {"status": "success", "filled": filled}
 
+    def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
+        """
+        Persist a lightweight FormElement concept for later exemplar reuse.
+        """
+        try:
+            url = params.get("url") or params.get("page") or ""
+            selector = params.get("selector") or params.get("xpath") or params.get("query") or ""
+            if not url and not selector:
+                return
+            element = Node(
+                kind="FormElement",
+                labels=["form", "exemplar"],
+                props={
+                    "url": url,
+                    "selector": selector,
+                    "action": action,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            try:
+                element.llm_embedding = self._embed_text(f"{selector} {url} {action}")
+            except Exception:
+                element.llm_embedding = None
+            self.memory.upsert(element, provenance, embedding_request=True)
+            self._emit_memory_upsert(element, provenance)
+        except Exception:
+            # Do not break the agent loop on exemplar logging
+            return
+
     def _embed_text(self, text: str) -> Optional[List[float]]:
         if not text:
             return None
@@ -688,6 +736,17 @@ class PersonalAssistantAgent:
                     }
                 ],
             }
+        if intent == "web_io":
+            url = self._extract_url(user_request) or "about:blank"
+            return {
+                "intent": intent,
+                "fallback": True,
+                "raw_llm": "Inspecting the page and capturing a screenshot.",
+                "steps": [
+                    {"tool": "web.get_dom", "params": {"url": url}, "comment": "Fetch DOM for inspection"},
+                    {"tool": "web.screenshot", "params": {"url": url}, "comment": "Capture page snapshot"},
+                ],
+            }
         if intent == "inform":
             return {
                 "intent": intent,
@@ -696,6 +755,17 @@ class PersonalAssistantAgent:
                 "steps": [],
             }
         return None
+
+    def _extract_url(self, text: str) -> Optional[str]:
+        """Best-effort URL/domain extractor for web fallback."""
+        # Simple domain/URL finder
+        m = re.search(r"(https?://[\\w\\.-]+|[\\w\\.-]+\\.(com|net|org|io|ai))", text, re.IGNORECASE)
+        if not m:
+            return None
+        url = m.group(1)
+        if not url.startswith("http"):
+            url = f"https://{url}"
+        return url
 
     def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list) -> Dict[str, Any]:
         """
