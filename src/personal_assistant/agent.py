@@ -244,7 +244,14 @@ class PersonalAssistantAgent:
     def _classify_intent(self, user_request: str) -> str:
         """Simulates intent classification based on keywords."""
         text = user_request.lower()
-        if "remind me to" in text or "add task" in text:
+        if (
+            "remind me to" in text
+            or "add task" in text
+            or "create a task" in text
+            or "task" in text
+            or "todo" in text
+            or "to-do" in text
+        ):
             return "task"
         elif "schedule" in text or "meeting" in text:
             return "schedule"
@@ -659,6 +666,25 @@ class PersonalAssistantAgent:
                         "tool": "memory.remember",
                         "params": {"text": user_request, "kind": "Concept", "props": {"note": user_request}},
                         "comment": "Fallback remember to store the fact.",
+                    }
+                ],
+            }
+        if intent == "task":
+            return {
+                "intent": intent,
+                "fallback": True,
+                "raw_llm": "Task noted. Adding to your queue.",
+                "steps": [
+                    {
+                        "tool": "tasks.create",
+                        "params": {
+                            "title": user_request,
+                            "due": None,
+                            "priority": 3,
+                            "notes": "Created via fallback plan",
+                            "links": [],
+                        },
+                        "comment": "Fallback task creation when LLM plan failed",
                     }
                 ],
             }
