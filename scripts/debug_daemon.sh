@@ -7,7 +7,7 @@ set -euo pipefail
 # - stop/status/clear-log commands
 #
 # Usage:
-#   ./scripts/debug_daemon.sh start
+#   ./scripts/debug_daemon.sh start [--test]
 #   ./scripts/debug_daemon.sh stop
 #   ./scripts/debug_daemon.sh status
 #   ./scripts/debug_daemon.sh clear-log
@@ -163,6 +163,14 @@ clear_log() {
 
 case "${1:-}" in
   start)
+    if [[ "${2:-}" == "--test" ]]; then
+      echo "Running test suite before starting agent..."
+      if ! poetry run pytest -q; then
+        echo "Tests failed; not starting agent."
+        exit 1
+      fi
+      echo "Tests passed."
+    fi
     start_agent
     ;;
   stop)
