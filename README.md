@@ -78,6 +78,7 @@ flowchart TB
 - Add richer RAG prompts so the agent can synthesize/reuse stored DAG procedures (e.g., LinkedIn recruiter workflows) and learn from prior embeddings.
 - Split the KSG module into its own package when ready (per goal of carving it into a subproject).
 - Evaluate hosting options for local LLMs: free persistent GPU endpoints are effectively unavailable; small CPU models (4/5-bit 7–8B) are slow on free-tier Oracle/Ampere. Plan for paid hosted GPUs (HF/Together/etc.) or larger self-hosted hardware when moving off OpenAI.
+- Comms roadmap: add Twilio (SMS/voice) support and a TTS/STT pipeline. Consider integrating with an Asterisk/voice service API to enable automated outbound calls and logging of call transcripts.
 
 ## Development Roadmap / Not Yet Implemented
 - Production-grade Playwright/Appium flows with retries/timeouts and real vision-assisted locators; live end-to-end tests beyond fixtures.
