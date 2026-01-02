@@ -1114,8 +1114,12 @@ class PersonalAssistantAgent:
         bias_procedure = any(
             kw in lower_q for kw in ("procedure", "steps", "workflow", "execute", "run", "recall", "credential", "login")
         )
+        ask_for_name = any(
+            kw in lower_q for kw in ("name", "who am", "what is my name", "my name")
+        )
         # If the query asks for a note or concept, surface note/description first
         bias_note = any(kw in lower_q for kw in ("note", "concept", "about"))
+        prefer_fact = bias_note or "credential" in lower_q or "password" in lower_q or "login" in lower_q
         if bias_note:
             target_name = None
             if user_request:
@@ -1170,26 +1174,41 @@ class PersonalAssistantAgent:
                         return f"Procedure '{title}' recalled."
             for item in memory_results:
                 props = item.get("props", {}) if isinstance(item, dict) else {}
+                labels = item.get("labels", []) if isinstance(item, dict) else getattr(item, "labels", [])
+                kind = item.get("kind") if isinstance(item, dict) else getattr(item, "kind", None)
+                if kind == "Message" or "history" in labels:
+                    continue
                 for key in ("note", "description", "content"):
                     if isinstance(props.get(key), str) and props.get(key).strip():
                         return props.get(key).strip()
-        # First, return immediately if a Person/Name node has an explicit name field.
-        for item in memory_results:
-            props = item.get("props", {}) if isinstance(item, dict) else {}
-            if isinstance(props.get("name"), str) and props["name"].strip():
-                clean = props["name"].strip()
-                return f"Your name is {clean}."
-        # Second pass: explicitly search for Person/Name kinds if not already surfaced.
-        for kind in ("Person", "Name"):
-            try:
-                hits = self.memory.search("", top_k=50, filters={"kind": kind}, query_embedding=None)
-            except Exception:
-                hits = []
-            for item in hits:
+        if prefer_fact:
+            for item in memory_results:
+                props = item.get("props", {}) if isinstance(item, dict) else {}
+                labels = item.get("labels", []) if isinstance(item, dict) else getattr(item, "labels", [])
+                kind = item.get("kind") if isinstance(item, dict) else getattr(item, "kind", None)
+                if kind == "Message" or "history" in labels:
+                    continue
+                for key in ("note", "description", "content"):
+                    val = props.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+        # Name recall only when user asks for it
+        if ask_for_name:
+            for item in memory_results:
                 props = item.get("props", {}) if isinstance(item, dict) else {}
                 if isinstance(props.get("name"), str) and props["name"].strip():
                     clean = props["name"].strip()
                     return f"Your name is {clean}."
+            for kind in ("Person", "Name"):
+                try:
+                    hits = self.memory.search("", top_k=50, filters={"kind": kind}, query_embedding=None)
+                except Exception:
+                    hits = []
+                for item in hits:
+                    props = item.get("props", {}) if isinstance(item, dict) else {}
+                    if isinstance(props.get("name"), str) and props["name"].strip():
+                        clean = props["name"].strip()
+                        return f"Your name is {clean}."
 
         scored: List[tuple[int, str]] = []
         for item in memory_results:

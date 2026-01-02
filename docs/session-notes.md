@@ -12,6 +12,7 @@
 - Added NetworkX-based in-memory MemoryTools and included it in the contract test suite; networkx dependency added to deps.
 - `_execute_plan` now surfaces tool errors (with tool/params/trace_id) so the planner can adapt; per-tool try/except wrapper with logging/events. Added `tests/test_agent_execute_plan_errors.py` to cover error bubbling and no-op plans.
 - Added adaptation coverage: `test_execute_request_adapts_after_tool_error` ensures a failing tool triggers re-planning and a succeeding follow-up step.
+- Memory recall heuristics tightened: ignore history/Message nodes and prefer notes/credentials over name recall unless the query asks for a name; added `test_recall_prefers_note_over_name_when_not_asked_for_name`.
 - Debug: live agent (Arango + real OpenAI key) `remember` requests produced code-fenced JSON and fell back to `memory.remember`. Stored page=1 credentials as a Concept node, but an inform query (“What note do you have about page=1 credentials?”) returned an unrelated name (“Lehel”) because `_answer_from_memory` surfaced a Person node first.
 - Added logging to capture raw LLM plan text on both success and error to diagnose parse issues.
 - Observed that with `USE_FAKE_OPENAI=1`, the fake chat response was plain text (“Hi”), causing JSON parse failures; with real OpenAI (`USE_FAKE_OPENAI=0`), the LLM returned valid JSON plans (legacy `{intent, steps}` shape).
@@ -45,6 +46,7 @@
 - Additional recent: `pytest tests/test_llm_json_command_contract.py -q` (pass/skip live), `pytest tests/test_memory_recall_priority.py -q`, `pytest tests/test_memory_associations_and_strength.py -q`.
 - New: `pytest tests/test_procedure_multi_step_integration.py -q` (pass, Arango path skipped), `pytest tests/test_knowshowgo_dag_and_recall.py -q`, `pytest tests/test_agent_arango_ksg_integration.py -q` (passes with `.env.local`).
 - Latest: `pytest tests/test_agent_execute_plan_errors.py -q` (passes; includes adaptation replan path).
+- Latest: `pytest tests/test_memory_recall_priority.py -q` (passes; includes name-vs-note preference fix).
 
 ## Guidance
 - See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).

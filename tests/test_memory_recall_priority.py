@@ -87,3 +87,25 @@ def test_store_and_recall_note_memory_remember():
     agent.openai_client = fake_recall
     res2 = agent.execute_request("What note do you have about page=1 credentials?")
     assert "page=1" in res2["plan"]["raw_llm"]
+
+
+def test_recall_prefers_note_over_name_when_not_asked_for_name():
+    memory = MockMemoryTools()
+    # Seed person name and a credential note
+    name = Node(kind="Name", labels=["fact"], props={"name": "Lehel"})
+    memory.upsert(name, _prov(), embedding_request=True)
+    note = Node(kind="Concept", labels=["fact"], props={"note": "Credentials for foo are bar/baz"})
+    memory.upsert(note, _prov(), embedding_request=True)
+    fake = FakeOpenAIClient(chat_response=json.dumps({"intent": "inform", "steps": []}), embedding=[0.1, 0.2])
+    agent = PersonalAssistantAgent(
+        memory,
+        MockCalendarTools(),
+        MockTaskTools(),
+        web=MockWebTools(),
+        contacts=MockContactsTools(),
+        openai_client=fake,
+    )
+    res = agent.execute_request("Tell me my saved credentials")
+    raw = res["plan"]["raw_llm"]
+    assert "Credentials for foo" in raw
+    assert "Your name is" not in raw
