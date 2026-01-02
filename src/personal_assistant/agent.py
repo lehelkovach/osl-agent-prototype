@@ -303,6 +303,18 @@ class PersonalAssistantAgent:
                 },
             )
             execution_results = self._execute_plan(plan, provenance)
+        # If execution still failed and we have no way forward, ask the user for guidance.
+        if execution_results.get("status") == "error" and intent not in ("remember", "task", "schedule"):
+            clarification = (
+                f"I hit an error while executing the plan: {execution_results.get('error', '')}. "
+                "Please provide the correct steps or selectors so I can try again."
+            )
+            plan["fallback"] = True
+            plan["raw_llm"] = clarification
+            plan.setdefault("intent", intent)
+            plan.setdefault("trace_id", provenance.trace_id)
+            execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
+
         # Persist executed plan as a Procedure with basic success/failure stats
         try:
             self._persist_procedure_run(user_request, plan, execution_results, provenance)
