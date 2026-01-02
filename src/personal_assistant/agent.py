@@ -600,6 +600,26 @@ class PersonalAssistantAgent:
                                 ]
                             if field_name.lower() in ("password", "pass", "pwd"):
                                 return ["input[type='password']", "#password", "input[name='password']"]
+                            if field_name.lower() in ("card", "cardnumber", "cc", "cc_number", "creditcard"):
+                                return [
+                                    "input[autocomplete='cc-number']",
+                                    "input[name*='card']",
+                                    "#card",
+                                    "input[type='tel']",
+                                ]
+                            if field_name.lower() in ("expiry", "exp", "expdate", "expiration"):
+                                return [
+                                    "input[autocomplete='cc-exp']",
+                                    "input[name*='exp']",
+                                    "#expiry",
+                                ]
+                            if field_name.lower() in ("cvc", "cvv", "securitycode", "code"):
+                                return [
+                                    "input[autocomplete='cc-csc']",
+                                    "input[name*='cvc']",
+                                    "input[name*='cvv']",
+                                    "#cvc",
+                                ]
                             return []
 
                         for field, sel in selectors.items():

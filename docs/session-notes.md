@@ -15,6 +15,7 @@
 - Memory recall heuristics tightened: ignore history/Message nodes and prefer notes/credentials over name recall unless the query asks for a name; added `test_recall_prefers_note_over_name_when_not_asked_for_name`.
 - Web fill now retries with fallback selectors (email/text/password/id/name) when a selector fails, capturing attempted selectors to avoid hard failures on selector mismatch.
 - Procedure reuse now hydrates stored steps (tool+params) from ProcedureBuilder memory and executes them directly; explicit procedure.create and persisted runs store tool+params in step payloads. Added `tests/test_agent_procedure_reuse_execute.py`.
+- Added CPMS routing toggle test (`tests/test_cpms_routing_toggle.py`) to verify procedure.create goes to CPMS when enabled; added card/expiry/cvc selector fallbacks in web.fill.
 - Debug: live agent (Arango + real OpenAI key) `remember` requests produced code-fenced JSON and fell back to `memory.remember`. Stored page=1 credentials as a Concept node, but an inform query (“What note do you have about page=1 credentials?”) returned an unrelated name (“Lehel”) because `_answer_from_memory` surfaced a Person node first.
 - Added logging to capture raw LLM plan text on both success and error to diagnose parse issues.
 - Observed that with `USE_FAKE_OPENAI=1`, the fake chat response was plain text (“Hi”), causing JSON parse failures; with real OpenAI (`USE_FAKE_OPENAI=0`), the LLM returned valid JSON plans (legacy `{intent, steps}` shape).
@@ -51,6 +52,7 @@
 - Latest: `pytest tests/test_memory_recall_priority.py -q` (passes; includes name-vs-note preference fix).
 - Latest: `pytest tests/test_agent_execute_plan_errors.py -q` (post-fill-fallback tweak; passing).
 - Latest: `pytest tests/test_agent_procedure_reuse_execute.py tests/test_agent_execute_plan_errors.py -q` (passing).
+- Latest: `pytest tests/test_cpms_routing_toggle.py -q` (passing).
 
 ## Guidance
 - See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).
