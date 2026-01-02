@@ -200,15 +200,27 @@ class PersonalAssistantAgent:
             return {"plan": plan, "execution_results": execution_results}
 
         # 3. Propose a Plan (LLM)
-        plan, raw_llm = self._generate_plan(
-            intent,
-            user_request,
-            memory_results,
-            tasks_context,
-            calendar_context,
-            contacts_context,
-            proc_matches,
-        )
+        try:
+            plan, raw_llm = self._generate_plan(
+                intent,
+                user_request,
+                memory_results,
+                tasks_context,
+                calendar_context,
+                contacts_context,
+                proc_matches,
+            )
+        except Exception as exc:
+            self.log.error(
+                "llm_plan_error",
+                module="agent",
+                function="execute_request",
+                intent=intent,
+                error=str(exc),
+                trace_id=provenance.trace_id,
+            )
+            plan = self._reuse_or_fallback(intent, user_request, proc_matches)
+            raw_llm = None
         if raw_llm:
             self._log_message("assistant", raw_llm, provenance)
         if plan.get("error") or not plan.get("steps"):
@@ -217,11 +229,8 @@ class PersonalAssistantAgent:
             plan.setdefault("raw_llm", "Hello! I'm ready to help.")
 
         # Confidence/uncertainty handling: if we have no actionable steps after fallback/reuse
-        # and the intent is not a direct "remember"/"task"/"schedule", ask the user for guidance
-        # when explicitly enabled or when the user request clearly asks "how" or mentions "unknown".
-        keywords = ["how", "unknown"]
-        force_ask = any(k in user_request.lower() for k in keywords)
-        if (self.ask_user_enabled or force_ask) and (not plan.get("steps")) and intent not in ("remember", "task", "schedule"):
+        # and the intent is not a direct "remember"/"task"/"schedule", ask the user for guidance.
+        if (not plan.get("steps")) and intent not in ("remember", "task", "schedule"):
             clarification = (
                 "I need your instructions. Please describe the steps or procedure so I can save it "
                 "and queue it."
