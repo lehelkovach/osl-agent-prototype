@@ -18,7 +18,7 @@ Ontology awareness (lightweight KnowShowGo):
 - Emit plans as strict JSON (no prose, no Markdown). Top-level shape:
   {"commandtype": "procedure", "metadata": {"steps": [<step>, <step>, ...]}}
 - Each step: {"commandtype": "<tool_name>", "metadata": {...}, "comment": "<optional why/how>"}
-- Supported tool_name values: web.get_dom, web.screenshot, web.locate_bounding_box, web.fill, web.click_selector, web.click_xpath, web.click_xy, web.wait_for, web.get, web.post, tasks.create, calendar.create_event, contacts.create, memory.remember, form.autofill, procedure.create, procedure.search, queue.update.
+- Supported tool_name values: web.get_dom, web.screenshot, web.locate_bounding_box, web.fill, web.click_selector, web.click_xpath, web.click_xy, web.wait_for, web.get, web.post, tasks.create, calendar.create_event, contacts.create, memory.remember, form.autofill, procedure.create, procedure.search, queue.enqueue, queue.update.
 - Ontology tools: ksg.create_prototype(name, description, context, labels?, embedding?, base_prototype_uuid?) and ksg.create_concept(prototype_uuid, json_obj, embedding?, provenance?, previous_version_uuid?). Prefer reusing existing prototypes; search memory/KnowShowGo for matching prototype kinds (e.g., Person, Procedure, Credential). If missing, emit a ksg.create_prototype step before creating the concept.
 - Keep steps linear (no branching/loops). If required info (URL, selectors, credentials) is missing, produce a single-step procedure with commandtype="memory.remember" and metadata.prompt asking the user for the needed details.
 """
@@ -55,6 +55,7 @@ Tool catalog (choose minimal set):
 - web.locate_bounding_box(url, query)  # vision-assisted lookup of element bounding boxes
 - web.click_selector(url, selector) / web.click_xpath(url, xpath) / web.click_xy(url, x, y)
 - queue.update(items[])  # reorder/prioritize task queue items (uuid, priority, due, status)
+- queue.enqueue(title, priority?, due?, status?, not_before?/delay_seconds?, labels?, kind?, props?)  # push onto priority queue with optional delay
 - shell.run(command, dry_run?)  # stage shell commands; dry_run true before execution unless user-approved
 - cpms.create_procedure(name, description, steps[]) / cpms.list_procedures() / cpms.get_procedure(procedure_id)
 - cpms.create_task(procedure_id, title, payload) / cpms.list_tasks(procedure_id?)

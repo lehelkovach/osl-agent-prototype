@@ -14,4 +14,5 @@
 - Keep changes ASCII; add comments only when non-obvious. Use `rg` for search. Use `apply_patch` for edits. Do not revert user changes.
 - When finishing a task, report: last issues, what you tried, what’s fixed, what remains relative to stated goals. Update `docs/session-notes.md` with current state.
 - For web automation plans: LLM should produce JSON commands; ask for missing credentials; associate URL seeds to stored credentials in memory (vault-like) when applicable. Query preferences before autofill if stored.
+- Queueing: LLM can emit `queue.enqueue` with priority/due/not_before or delay_seconds to push work onto the priority queue; `queue.update` adjusts priorities/status later.
 - If a skill is required by name, open its `SKILL.md` and follow instructions. Use skills only when triggered.

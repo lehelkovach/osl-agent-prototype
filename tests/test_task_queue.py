@@ -59,6 +59,27 @@ class TestTaskQueue(unittest.TestCase):
         queue_after = self.queue_manager.ensure_queue(self.provenance)
         self.assertEqual(queue_after.props["items"], [])
 
+    def test_enqueue_payload_with_delay_and_not_before_sorting(self):
+        early_time = "2024-01-01T00:00:00+00:00"
+        later_time = "2024-02-01T00:00:00+00:00"
+        q1 = self.queue_manager.enqueue_payload(
+            provenance=self.provenance,
+            title="Delayed later",
+            priority=1,
+            not_before=later_time,
+        )
+        q2 = self.queue_manager.enqueue_payload(
+            provenance=self.provenance,
+            title="Delayed earlier",
+            priority=1,
+            not_before=early_time,
+        )
+        items = q2.props["items"]
+        self.assertEqual(len(items), 2)
+        # Same priority: earlier not_before should come first
+        self.assertEqual(items[0]["title"], "Delayed earlier")
+        self.assertEqual(items[0]["not_before"], early_time)
+
 
 if __name__ == "__main__":
     unittest.main()

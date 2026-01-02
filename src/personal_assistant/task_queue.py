@@ -86,6 +86,7 @@ class TaskQueueManager:
         status: str = "pending",
         title: Optional[str] = None,
         create_edge: bool = True,
+        not_before: Optional[str] = None,
     ) -> Node:
         """
         Enqueue any concept node, optionally linking the queue to the node via an edge.
@@ -101,6 +102,7 @@ class TaskQueueManager:
                 "status": status,
                 "kind": node.kind,
                 "created_at": datetime.now(timezone.utc).isoformat(),
+                "not_before": not_before or node.props.get("not_before"),
             }
         )
         queue.props["items"] = self._sort_items(items)
@@ -116,6 +118,49 @@ class TaskQueueManager:
             self.memory.upsert(edge, provenance)
         return queue
 
+    def enqueue_payload(
+        self,
+        provenance: Provenance,
+        title: str,
+        kind: str = "Task",
+        labels: Optional[List[str]] = None,
+        priority: Optional[int] = None,
+        due: Optional[str] = None,
+        status: str = "pending",
+        not_before: Optional[str] = None,
+        props: Optional[Dict[str, Any]] = None,
+        create_edge: bool = True,
+    ) -> Node:
+        """
+        Convenience to create a node from payload and enqueue it.
+        """
+        node_props = {
+            "title": title,
+            "priority": priority,
+            "due": due,
+            "status": status,
+            "not_before": not_before,
+        }
+        if props:
+            node_props.update(props)
+        node = Node(kind=kind, labels=labels or [kind], props=node_props)
+        if self.embed_fn:
+            try:
+                node.llm_embedding = self.embed_fn(title)
+            except Exception:
+                node.llm_embedding = None
+        self.memory.upsert(node, provenance, embedding_request=True)
+        return self.enqueue_node(
+            node,
+            provenance,
+            priority=priority,
+            due=due,
+            status=status,
+            title=title,
+            create_edge=create_edge,
+            not_before=not_before,
+        )
+
     def dequeue(self, provenance: Provenance) -> Optional[Dict[str, Any]]:
         queue = self.ensure_queue(provenance)
         items = queue.props.get("items", [])
@@ -130,8 +175,9 @@ class TaskQueueManager:
     def _sort_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         def sort_key(item: Dict[str, Any]):
             priority = item.get("priority") if item.get("priority") is not None else 999
+            not_before = item.get("not_before") or ""
             due = item.get("due") or ""
             created_at = item.get("created_at") or ""
-            return (priority, due, created_at)
+            return (priority, not_before or due, due, created_at)
 
         return sorted(items, key=sort_key)

@@ -3,7 +3,7 @@ import asyncio
 from typing import Dict, Any, List, Optional
 import re
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
 from src.personal_assistant.prompts import SYSTEM_PROMPT, DEVELOPER_PROMPT
@@ -569,6 +569,37 @@ class PersonalAssistantAgent:
             elif tool_name == "shell.run" and self.shell:
                 res = self.shell.run(**params)
                 results.append(res)
+            elif tool_name == "queue.enqueue":
+                delay_seconds = params.get("delay_seconds")
+                not_before = params.get("not_before")
+                if delay_seconds and not not_before:
+                    try:
+                        nb_dt = datetime.now(timezone.utc) + timedelta(seconds=float(delay_seconds))
+                        not_before = nb_dt.isoformat()
+                    except Exception:
+                        not_before = None
+                title = params.get("title") or params.get("name") or "Task"
+                enqueue_res = self.queue_manager.enqueue_payload(
+                    provenance=provenance,
+                    title=title,
+                    kind=params.get("kind", "Task"),
+                    labels=params.get("labels"),
+                    priority=params.get("priority"),
+                    due=params.get("due"),
+                    status=params.get("status", "pending"),
+                    not_before=not_before,
+                    props=params.get("props"),
+                    create_edge=True,
+                )
+                res = {"status": "success", "queue": enqueue_res.props.get("items", [])}
+                results.append(res)
+                self._emit(
+                    "queue_updated",
+                    {
+                        "trace_id": provenance.trace_id,
+                        "items": enqueue_res.props.get("items", []),
+                    },
+                )
             elif tool_name == "queue.update":
                 queue = self.queue_manager.update_items(params.get("items", []), provenance)
                 res = {"status": "success", "queue": queue.props.get("items", [])}

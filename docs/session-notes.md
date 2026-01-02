@@ -5,6 +5,7 @@
 - Keep procedure planning JSON-first: LLM returns `{"commandtype": ..., "metadata": {...}}` with procedure steps; execute and persist run stats + links.
 
 ## Recent changes
+- Added `queue.enqueue` tool with optional `not_before`/`delay_seconds` and prompt/docs updates; queue items now store not_before and sort by priority/time. Agent handles enqueue tool and emits queue updates.
 - Agent prompt + parsing now expect strict JSON plans; added fallback parsing for legacy `{intent, steps}`.
 - Procedure runs are persisted with tested/success/failure counters and linked via `run_of` edges; added test `tests/test_agent_procedure_run_stats.py`.
 - Added MemoryTools contract tests (`tests/test_memory_contract.py`) for upsert/filter and embedding ranking, with optional Chroma/Arango backends via env flags.
@@ -37,6 +38,7 @@
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
 
 ## Testing
+- Last run: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage; passing).
 - Last run: `pytest tests/test_memory_contract.py -q` (passing across mock + networkx).
 - Additional recent: `pytest tests/test_llm_json_command_contract.py -q` (pass/skip live), `pytest tests/test_memory_recall_priority.py -q`, `pytest tests/test_memory_associations_and_strength.py -q`.
 - New: `pytest tests/test_procedure_multi_step_integration.py -q` (pass, Arango path skipped), `pytest tests/test_knowshowgo_dag_and_recall.py -q`, `pytest tests/test_agent_arango_ksg_integration.py -q` (passes with `.env.local`).
@@ -44,3 +46,4 @@
 ## Guidance
 - See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).
 - Architecture reference: `docs/architecture.md` for components/ontology/memory/testing; re-read it alongside `copilot-prompt.txt` and this file when resuming work.
+- Test coverage summary lives in `docs/architecture.md` (memory/recall, procedures, LLM plan contract, KSG tools, forms/credentials, Arango smoke) plus noted gaps (no real Playwright/Appium, shell executor, etc.).

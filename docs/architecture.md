@@ -31,6 +31,18 @@
 - When resuming work, re-read `copilot-prompt.txt` and `docs/session-notes.md` to regain scope, goals, flags, and recent changes.
 - Consult this architecture doc and README before changing behavior; follow the debug loop (daemon, curl, `log_dump.txt` read/clear) for live checks.
 
+## Test Coverage (what is exercised)
+- **Memory/Recall**: contract search/upsert (`tests/test_memory_contract.py`), recall priority (procedures/notes vs name), associations/strength counters (`tests/test_memory_recall_priority.py`, `tests/test_memory_associations_and_strength.py`), KSG seeds/inheritance and typed concepts (Object/DAG/Task/Event/Tag) in `tests/test_ksg_seed.py`, `tests/test_knowshowgo_dag_and_recall.py`.
+- **Procedures**: run stats + `run_of` edges (`tests/test_agent_procedure_run_stats.py`), multi-step creation/reuse/order (`tests/test_procedure_multi_step_integration.py`), Arango procedure reuse in `tests/test_agent_arango_ksg_integration.py`.
+- **LLM Plan Contract**: JSON-only plan parsing/enforcement, prompt wiring (`tests/test_llm_json_command_contract.py` with optional live OpenAI).
+- **KSG Tools via Agent**: prototype/concept creation (`tests/test_agent_ksg_prototype_concept.py`).
+- **Queue/Scheduling**: priority queue ordering, delay/not_before enqueues, scheduler-triggered tasks (`tests/test_task_queue.py`, `tests/test_agent_scheduler_queue.py`, `tests/test_scheduler.py`, `tests/test_agent_queue_enqueue.py`).
+- **Forms/Credentials (mocked)**: form autofill from stored FormData/Identity/Credential/PaymentMethod (`tests/test_agent_form_autofill.py`), webform fills/clicks via MockWebTools (`tests/test_agent_webform_dynamic.py`), credential recall (`tests/test_agent_credential_recall.py`).
+- **Arango**: connection/AQL smoke (`tests/test_arango_connection.py`, `tests/test_arango_aql_queries.py`, `tests/test_arango_memory.py`), agent concept note recall/procedure reuse (`tests/test_agent_arango_ksg_integration.py`).
+- **Other agent flows**: scheduler/queue, shell mock, CPMS routing, web DOM/screenshot (mock) in respective tests.
+
+Gaps: no real Playwright/Appium E2E, no live shell executor tests, limited CPMS live coverage, limited adversarial recall/intent cases, no real-world form HTML fixtures beyond simple mocks.
+
 ## Configuration
 - `.env.local` controls OpenAI keys/models, Arango connection (`ARANGO_URL/DB/USER/PASSWORD/VERIFY`), embedding backend (local vs OpenAI), USE_FAKE_OPENAI, USE_PLAYWRIGHT, USE_CPMS_FOR_PROCS, etc.
 - Scripts:
