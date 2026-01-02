@@ -587,11 +587,40 @@ class PersonalAssistantAgent:
                         values = params.pop("values", params.get("data") or params.get("fields") or {})
                         url = params.get("url")
                         multi_res = []
+
+                        def _fallback_selectors(field_name: str) -> List[str]:
+                            if field_name.lower() in ("username", "email", "user"):
+                                return [
+                                    "input[type='email']",
+                                    "input[type='text']",
+                                    "#email",
+                                    "#username",
+                                    "input[name='email']",
+                                    "input[name='username']",
+                                ]
+                            if field_name.lower() in ("password", "pass", "pwd"):
+                                return ["input[type='password']", "#password", "input[name='password']"]
+                            return []
+
                         for field, sel in selectors.items():
                             val = ""
                             if isinstance(values, dict):
                                 val = values.get(field, params.get("text") or "")
-                            single = self.web.fill(url=url, selector=sel, text=val)
+                            try:
+                                single = self.web.fill(url=url, selector=sel, text=val)
+                            except Exception as exc:
+                                attempted = [sel]
+                                single = {"status": "error", "error": str(exc), "selector": sel}
+                                for fallback_sel in _fallback_selectors(field):
+                                    if fallback_sel in attempted:
+                                        continue
+                                    try:
+                                        single = self.web.fill(url=url, selector=fallback_sel, text=val)
+                                        single["fallback_selector"] = fallback_sel
+                                        break
+                                    except Exception:
+                                        attempted.append(fallback_sel)
+                                single.setdefault("attempted_selectors", attempted)
                             multi_res.append(single)
                         res = {"status": "success", "fills": multi_res}
                     else:
