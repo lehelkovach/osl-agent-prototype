@@ -315,6 +315,14 @@ class PersonalAssistantAgent:
             plan.setdefault("trace_id", provenance.trace_id)
             execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
 
+        # Persist selector improvements back to stored procedures when reuse + fallbacks succeed.
+        proc_uuid = plan.get("procedure_uuid")
+        if proc_uuid and execution_results.get("status") == "completed":
+            try:
+                self._update_procedure_selectors(proc_uuid, execution_results)
+            except Exception:
+                pass
+
         # Persist executed plan as a Procedure with basic success/failure stats
         try:
             self._persist_procedure_run(user_request, plan, execution_results, provenance)
@@ -662,6 +670,7 @@ class PersonalAssistantAgent:
                                     except Exception:
                                         attempted.append(fallback_sel)
                                 single.setdefault("attempted_selectors", attempted)
+                            single["field"] = field
                             multi_res.append(single)
                         res = {"status": "success", "fills": multi_res}
                     else:
@@ -979,6 +988,58 @@ class PersonalAssistantAgent:
         # Sort by order if present
         steps_with_order.sort(key=lambda t: t[0])
         return [s for _, s in steps_with_order]
+
+    def _update_procedure_selectors(self, proc_uuid: str, execution_results: Dict[str, Any]) -> None:
+        """
+        If a reused procedure succeeded using fallback selectors, persist those selectors back into the stored Step.
+        """
+        if not self.procedure_builder:
+            return
+        # Gather fallback selector updates from execution_results
+        selector_updates: Dict[str, str] = {}
+        for step_res in execution_results.get("steps", []):
+            fills = step_res.get("fills") or []
+            for fill in fills:
+                if fill.get("fallback_selector") and fill.get("field"):
+                    selector_updates[fill["field"]] = fill["fallback_selector"]
+        if not selector_updates:
+            return
+        try:
+            steps = self.memory.search("", top_k=500, filters={"kind": "Step"}, query_embedding=None)
+        except Exception:
+            return
+        for st in steps:
+            props = st.get("props", {}) if isinstance(st, dict) else {}
+            if props.get("procedure_uuid") != proc_uuid:
+                continue
+            if props.get("tool") not in ("web.fill",):
+                continue
+            payload = props.get("payload") or {}
+            params = payload.get("params") or {}
+            selectors = params.get("selectors") or {}
+            updated = False
+            for field, new_sel in selector_updates.items():
+                if field in selectors and selectors[field] != new_sel:
+                    selectors[field] = new_sel
+                    updated = True
+            if updated:
+                params["selectors"] = selectors
+                payload["params"] = params
+                props["payload"] = payload
+                st["props"] = props
+                try:
+                    self.memory.upsert(
+                        st,
+                        Provenance(
+                            source="user",
+                            ts=datetime.now(timezone.utc).isoformat(),
+                            confidence=1.0,
+                            trace_id="proc-update",
+                        ),
+                        embedding_request=False,
+                    )
+                except Exception:
+                    continue
 
     def _fallback_plan(self, intent: str, user_request: str) -> Optional[Dict[str, Any]]:
         """

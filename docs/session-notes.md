@@ -18,6 +18,7 @@
 - Added CPMS routing toggle test (`tests/test_cpms_routing_toggle.py`) to verify procedure.create goes to CPMS when enabled; added card/expiry/cvc selector fallbacks in web.fill.
 - LLM plan errors now fall back to reuse/fallback without crashing; if plan/steps are empty the agent prompts the user for instructions. Added `tests/test_agent_plan_fallback_on_error.py` and `tests/test_agent_ask_user_on_empty_plan.py`.
 - If execution errors persist after adaptation, the agent now asks the user for guidance with the error context. Added `tests/test_agent_ask_user_on_execution_error.py`.
+- Successful fallback selectors are persisted back into stored procedures, so future runs reuse the working selectors. Added `tests/test_agent_procedure_selector_update.py`.
 - Debug: live agent (Arango + real OpenAI key) `remember` requests produced code-fenced JSON and fell back to `memory.remember`. Stored page=1 credentials as a Concept node, but an inform query (“What note do you have about page=1 credentials?”) returned an unrelated name (“Lehel”) because `_answer_from_memory` surfaced a Person node first.
 - Added logging to capture raw LLM plan text on both success and error to diagnose parse issues.
 - Observed that with `USE_FAKE_OPENAI=1`, the fake chat response was plain text (“Hi”), causing JSON parse failures; with real OpenAI (`USE_FAKE_OPENAI=0`), the LLM returned valid JSON plans (legacy `{intent, steps}` shape).
@@ -56,6 +57,7 @@
 - Latest: `pytest tests/test_agent_procedure_reuse_execute.py tests/test_agent_execute_plan_errors.py -q` (passing).
 - Latest: `pytest tests/test_cpms_routing_toggle.py -q` (passing).
 - Latest: `pytest tests/test_agent_plan_fallback_on_error.py tests/test_agent_ask_user_on_empty_plan.py -q` (passing).
+- Latest: `pytest tests/test_agent_procedure_selector_update.py tests/test_agent_ask_user_on_execution_error.py -q` (passing).
 
 ## Guidance
 - See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).
