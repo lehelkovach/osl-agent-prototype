@@ -272,7 +272,7 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
     local_embedder = LocalEmbedder() if use_local_embed else None
     try:
         if use_fake:
-            fake_resp = os.getenv("FAKE_OPENAI_CHAT_RESPONSE", "Hi")
+            fake_resp = os.getenv("FAKE_OPENAI_CHAT_RESPONSE", '{"intent":"inform","steps":[]}')
             openai_client = FakeOpenAIClient(chat_response=fake_resp, embedding=[0.0, 0.0, 0.0])
         elif use_local_embed:
             openai_client = OpenAIClient()  # keep chat via OpenAI unless also disabled

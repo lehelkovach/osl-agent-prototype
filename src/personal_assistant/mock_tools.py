@@ -228,7 +228,20 @@ class MockWebTools(WebTools):
         self._safe_log(f"Mock CLICK_XPATH: {url} {xpath}")
         return response
 
-    def fill(self, url: str, selector: str, text: str) -> Dict[str, Any]:
+    def fill(self, url: str, selector: str = "", text: str = "", selectors: Dict[str, str] = None, values: Dict[str, str] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Fill a single selector (legacy) or multiple via selectors/values mapping.
+        """
+        if selectors:
+            responses = []
+            vals = values or kwargs.get("data") or kwargs.get("fields") or {}
+            for field, sel in selectors.items():
+                val = vals.get(field, text)
+                response = {"status": 200, "url": url, "action": "fill", "selector": sel, "text": val}
+                responses.append(response)
+                self.history.append({"method": "FILL", "url": url, "selector": sel, "text": val, "response": response})
+                self._safe_log(f"Mock FILL: {url} {sel}={val}")
+            return {"status": 200, "url": url, "responses": responses}
         response = {"status": 200, "url": url, "action": "fill", "selector": selector, "text": text}
         self.history.append({"method": "FILL", "url": url, "selector": selector, "text": text, "response": response})
         self._safe_log(f"Mock FILL: {url} {selector}={text}")

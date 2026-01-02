@@ -269,6 +269,31 @@ class PersonalAssistantAgent:
 
         # 4. Execute via Tools
         execution_results = self._execute_plan(plan, provenance)
+        if execution_results.get("status") == "error":
+            # Single adaptation attempt: ask LLM to adjust based on the error context.
+            err = execution_results.get("error", "")
+            adapt_request = f"{user_request}\nPrevious plan failed with error: {err}. Adjust selectors/URLs/values and try again."
+            plan, raw_llm = self._generate_plan(
+                intent,
+                adapt_request,
+                memory_results,
+                tasks_context,
+                calendar_context,
+                contacts_context,
+                proc_matches,
+            )
+            plan["adapted"] = True
+            plan["raw_llm"] = raw_llm or plan.get("raw_llm")
+            self._emit(
+                "plan_ready",
+                {
+                    "plan": plan,
+                    "raw_llm": plan.get("raw_llm"),
+                    "trace_id": provenance.trace_id,
+                    "fallback": plan.get("fallback", False),
+                },
+            )
+            execution_results = self._execute_plan(plan, provenance)
         # Persist executed plan as a Procedure with basic success/failure stats
         try:
             self._persist_procedure_run(user_request, plan, execution_results, provenance)
@@ -297,6 +322,7 @@ class PersonalAssistantAgent:
     def _classify_intent(self, user_request: str) -> str:
         """Simulates intent classification based on keywords."""
         text = user_request.lower()
+        has_url = "http://" in text or "https://" in text or any(tld in text for tld in (".com", ".net", ".org", ".io", ".ai"))
         if (
             "remind me to" in text
             or "add task" in text
@@ -326,8 +352,12 @@ class PersonalAssistantAgent:
                 "steps",
                 "execute",
                 "run",
+                "screenshot",
+                "capture",
             ]
         ):
+            return "web_io"
+        elif has_url:
             return "web_io"
         else:
             return "inform"
@@ -453,11 +483,13 @@ class PersonalAssistantAgent:
         raise RuntimeError("Unrecognized plan shape")
 
     def _execute_plan(self, plan: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
-        """Executes each step in the plan by calling the appropriate tool."""
+        """Executes each step in the plan by calling the appropriate tool.
+        Any tool error is surfaced so the planner can adapt."""
         results = []
         for step in plan.get("steps", []):
             tool_name = step.get("tool")
-            params = step.get("params", {})
+            params = dict(step.get("params") or {})
+            ts = datetime.now(timezone.utc).isoformat()
             self.log.debug(
                 "tool_start",
                 module="agent",
@@ -465,7 +497,7 @@ class PersonalAssistantAgent:
                 tool=tool_name,
                 params=params,
                 trace_id=provenance.trace_id,
-                ts=datetime.now(timezone.utc).isoformat(),
+                ts=ts,
             )
             self._emit(
                 "tool_start",
@@ -473,238 +505,237 @@ class PersonalAssistantAgent:
                     "tool": tool_name,
                     "params": params,
                     "trace_id": provenance.trace_id,
-                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts": ts,
                 },
             )
-            if tool_name == "tasks.create":
-                res = self.tasks.create(**params)
-                if res.get("status") == "success" and "task" in res:
-                    task_node = self._task_to_node(res["task"])
-                    task_node.llm_embedding = self._embed_text(task_node.props.get("title", ""))
-                    self.memory.upsert(task_node, provenance, embedding_request=True)
-                    self._emit_memory_upsert(task_node, provenance)
-                    queue = self.queue_manager.enqueue(task_node, provenance)
+            try:
+                if tool_name == "tasks.create":
+                    res = self.tasks.create(**params)
+                    if res.get("status") == "success" and "task" in res:
+                        task_node = self._task_to_node(res["task"])
+                        task_node.llm_embedding = self._embed_text(task_node.props.get("title", ""))
+                        self.memory.upsert(task_node, provenance, embedding_request=True)
+                        self._emit_memory_upsert(task_node, provenance)
+                        queue = self.queue_manager.enqueue(task_node, provenance)
+                        self._emit(
+                            "queue_updated",
+                            {
+                                "trace_id": provenance.trace_id,
+                                "task_uuid": task_node.uuid,
+                                "items": queue.props.get("items", []),
+                            },
+                        )
+                elif tool_name == "calendar.create_event":
+                    res = self.calendar.create_event(**params)
+                    if res.get("status") == "success" and "event" in res:
+                        event_node = Node(
+                            kind="Event",
+                            labels=[res["event"]["title"]],
+                            props=res["event"],
+                        )
+                        event_node.llm_embedding = self._embed_text(res["event"]["title"])
+                        self.memory.upsert(event_node, provenance, embedding_request=True)
+                        self._emit_memory_upsert(event_node, provenance)
+                        self._emit(
+                            "calendar_event_created",
+                            {
+                                "trace_id": provenance.trace_id,
+                                "event": res["event"],
+                            },
+                        )
+                elif tool_name == "contacts.create" and self.contacts:
+                    res = self.contacts.create(**params)
+                    if res.get("status") == "success" and "contact" in res:
+                        contact_node = Node(
+                            kind="Person",
+                            labels=[res["contact"].get("name", "contact")],
+                            props=res["contact"],
+                        )
+                        contact_node.llm_embedding = self._embed_text(
+                            " ".join(
+                                [
+                                    res["contact"].get("name", ""),
+                                    " ".join(res["contact"].get("emails", [])),
+                                    " ".join(res["contact"].get("phones", [])),
+                                ]
+                            )
+                        )
+                        self.memory.upsert(contact_node, provenance, embedding_request=True)
+                        self._emit_memory_upsert(contact_node, provenance)
+                elif tool_name == "web.get" and self.web:
+                    res = self.web.get(**params)
+                elif tool_name == "web.post" and self.web:
+                    res = self.web.post(**params)
+                elif tool_name == "web.screenshot" and self.web:
+                    res = self.web.screenshot(**params)
+                elif tool_name == "web.get_dom" and self.web:
+                    res = self.web.get_dom(**params)
+                elif tool_name == "web.locate_bounding_box" and self.web:
+                    res = self.web.locate_bounding_box(**params)
+                    self._record_form_element(params, provenance, action="locate_bounding_box")
+                elif tool_name == "web.click_selector" and self.web:
+                    res = self.web.click_selector(**params)
+                    self._record_form_element(params, provenance, action="click_selector")
+                elif tool_name == "web.click_xpath" and self.web:
+                    res = self.web.click_xpath(**params)
+                    self._record_form_element(params, provenance, action="click_xpath")
+                elif tool_name == "web.click_xy" and self.web:
+                    res = self.web.click_xy(**params)
+                elif tool_name == "web.fill" and self.web:
+                    if "selectors" in params:
+                        selectors = params.pop("selectors", {}) or {}
+                        values = params.pop("values", params.get("data") or params.get("fields") or {})
+                        url = params.get("url")
+                        multi_res = []
+                        for field, sel in selectors.items():
+                            val = ""
+                            if isinstance(values, dict):
+                                val = values.get(field, params.get("text") or "")
+                            single = self.web.fill(url=url, selector=sel, text=val)
+                            multi_res.append(single)
+                        res = {"status": "success", "fills": multi_res}
+                    else:
+                        res = self.web.fill(**params)
+                    self._record_form_element(params, provenance, action="fill")
+                elif tool_name == "web.wait_for" and self.web:
+                    res = self.web.wait_for(**params)
+                elif tool_name == "shell.run" and self.shell:
+                    res = self.shell.run(**params)
+                elif tool_name == "queue.enqueue":
+                    delay_seconds = params.get("delay_seconds")
+                    not_before = params.get("not_before")
+                    if delay_seconds and not not_before:
+                        try:
+                            nb_dt = datetime.now(timezone.utc) + timedelta(seconds=float(delay_seconds))
+                            not_before = nb_dt.isoformat()
+                        except Exception:
+                            not_before = None
+                    title = params.get("title") or params.get("name") or "Task"
+                    enqueue_res = self.queue_manager.enqueue_payload(
+                        provenance=provenance,
+                        title=title,
+                        kind=params.get("kind", "Task"),
+                        labels=params.get("labels"),
+                        priority=params.get("priority"),
+                        due=params.get("due"),
+                        status=params.get("status", "pending"),
+                        not_before=not_before,
+                        props=params.get("props"),
+                        create_edge=True,
+                    )
+                    res = {"status": "success", "queue": enqueue_res.props.get("items", [])}
                     self._emit(
                         "queue_updated",
                         {
                             "trace_id": provenance.trace_id,
-                            "task_uuid": task_node.uuid,
+                            "items": enqueue_res.props.get("items", []),
+                        },
+                    )
+                elif tool_name == "queue.update":
+                    queue = self.queue_manager.update_items(params.get("items", []), provenance)
+                    res = {"status": "success", "queue": queue.props.get("items", [])}
+                    self._emit(
+                        "queue_updated",
+                        {
+                            "trace_id": provenance.trace_id,
                             "items": queue.props.get("items", []),
                         },
                     )
-                results.append(res)
-            elif tool_name == "calendar.create_event":
-                res = self.calendar.create_event(**params)
-                if res.get("status") == "success" and "event" in res:
-                    event_node = Node(
-                        kind="Event",
-                        labels=[res["event"]["title"]],
-                        props=res["event"],
-                    )
-                    event_node.llm_embedding = self._embed_text(res["event"]["title"])
-                    self.memory.upsert(event_node, provenance, embedding_request=True)
-                    self._emit_memory_upsert(event_node, provenance)
-                    self._emit(
-                        "calendar_event_created",
-                        {
-                            "trace_id": provenance.trace_id,
-                            "event": res["event"],
-                        },
-                    )
-                results.append(res)
-            elif tool_name == "contacts.create" and self.contacts:
-                res = self.contacts.create(**params)
-                if res.get("status") == "success" and "contact" in res:
-                    contact_node = Node(
-                        kind="Person",
-                        labels=[res["contact"].get("name", "contact")],
-                        props=res["contact"],
-                    )
-                    contact_node.llm_embedding = self._embed_text(
-                        " ".join(
-                            [
-                                res["contact"].get("name", ""),
-                                " ".join(res["contact"].get("emails", [])),
-                                " ".join(res["contact"].get("phones", [])),
-                            ]
-                        )
-                    )
-                    self.memory.upsert(contact_node, provenance, embedding_request=True)
-                    self._emit_memory_upsert(contact_node, provenance)
-                results.append(res)
-            elif tool_name == "web.get" and self.web:
-                res = self.web.get(**params)
-                results.append(res)
-            elif tool_name == "web.post" and self.web:
-                res = self.web.post(**params)
-                results.append(res)
-            elif tool_name == "web.screenshot" and self.web:
-                res = self.web.screenshot(**params)
-                results.append(res)
-            elif tool_name == "web.get_dom" and self.web:
-                res = self.web.get_dom(**params)
-                results.append(res)
-            elif tool_name == "web.locate_bounding_box" and self.web:
-                res = self.web.locate_bounding_box(**params)
-                self._record_form_element(params, provenance, action="locate_bounding_box")
-                results.append(res)
-            elif tool_name == "web.click_selector" and self.web:
-                res = self.web.click_selector(**params)
-                self._record_form_element(params, provenance, action="click_selector")
-                results.append(res)
-            elif tool_name == "web.click_xpath" and self.web:
-                res = self.web.click_xpath(**params)
-                self._record_form_element(params, provenance, action="click_xpath")
-                results.append(res)
-            elif tool_name == "web.click_xy" and self.web:
-                res = self.web.click_xy(**params)
-                results.append(res)
-            elif tool_name == "web.fill" and self.web:
-                res = self.web.fill(**params)
-                self._record_form_element(params, provenance, action="fill")
-                results.append(res)
-            elif tool_name == "web.wait_for" and self.web:
-                res = self.web.wait_for(**params)
-                results.append(res)
-            elif tool_name == "shell.run" and self.shell:
-                res = self.shell.run(**params)
-                results.append(res)
-            elif tool_name == "queue.enqueue":
-                delay_seconds = params.get("delay_seconds")
-                not_before = params.get("not_before")
-                if delay_seconds and not not_before:
+                elif tool_name == "memory.remember":
+                    res = self._remember_fact(params, provenance)
+                elif tool_name == "cpms.create_procedure":
+                    if not self.cpms:
+                        res = {"status": "error", "error": "CPMS adapter not configured"}
+                    else:
+                        res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
+                elif tool_name == "cpms.list_procedures":
+                    if not self.cpms:
+                        res = {"status": "error", "error": "CPMS adapter not configured"}
+                    else:
+                        res = {"status": "success", "procedures": self.cpms.list_procedures()}
+                elif tool_name == "cpms.get_procedure":
+                    if not self.cpms:
+                        res = {"status": "error", "error": "CPMS adapter not configured"}
+                    else:
+                        res = {"status": "success", "procedure": self.cpms.get_procedure(**params)}
+                elif tool_name == "cpms.create_task":
+                    if not self.cpms:
+                        res = {"status": "error", "error": "CPMS adapter not configured"}
+                    else:
+                        res = {"status": "success", "task": self.cpms.create_task(**params)}
+                elif tool_name == "cpms.list_tasks":
+                    if not self.cpms:
+                        res = {"status": "error", "error": "CPMS adapter not configured"}
+                    else:
+                        res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
+                elif tool_name == "procedure.create":
+                    if self.use_cpms_for_procs and self.cpms:
+                        res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
+                    elif self.procedure_builder:
+                        norm_params = params.copy()
+                        # Normalize to ProcedureBuilder signature (title instead of name)
+                        if "name" in norm_params and "title" not in norm_params:
+                            norm_params["title"] = norm_params.pop("name")
+                        res = {
+                            "status": "success",
+                            "procedure": self.procedure_builder.create_procedure(**norm_params),
+                        }
+                    else:
+                        res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                elif tool_name == "procedure.search":
+                    if self.use_cpms_for_procs and self.cpms:
+                        try:
+                            procs = self.cpms.list_procedures()
+                        except Exception as exc:
+                            res = {"status": "error", "error": str(exc)}
+                        else:
+                            res = {"status": "success", "procedures": procs}
+                    elif self.procedure_builder:
+                        res = {
+                            "status": "success",
+                            "procedures": self.procedure_builder.search_procedures(**params),
+                        }
+                    else:
+                        res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                elif tool_name == "ksg.create_prototype":
                     try:
-                        nb_dt = datetime.now(timezone.utc) + timedelta(seconds=float(delay_seconds))
-                        not_before = nb_dt.isoformat()
-                    except Exception:
-                        not_before = None
-                title = params.get("title") or params.get("name") or "Task"
-                enqueue_res = self.queue_manager.enqueue_payload(
-                    provenance=provenance,
-                    title=title,
-                    kind=params.get("kind", "Task"),
-                    labels=params.get("labels"),
-                    priority=params.get("priority"),
-                    due=params.get("due"),
-                    status=params.get("status", "pending"),
-                    not_before=not_before,
-                    props=params.get("props"),
-                    create_edge=True,
-                )
-                res = {"status": "success", "queue": enqueue_res.props.get("items", [])}
-                results.append(res)
-                self._emit(
-                    "queue_updated",
-                    {
-                        "trace_id": provenance.trace_id,
-                        "items": enqueue_res.props.get("items", []),
-                    },
-                )
-            elif tool_name == "queue.update":
-                queue = self.queue_manager.update_items(params.get("items", []), provenance)
-                res = {"status": "success", "queue": queue.props.get("items", [])}
-                results.append(res)
-                self._emit(
-                    "queue_updated",
-                    {
-                        "trace_id": provenance.trace_id,
-                        "items": queue.props.get("items", []),
-                    },
-                )
-            elif tool_name == "memory.remember":
-                res = self._remember_fact(params, provenance)
-                results.append(res)
-            elif tool_name == "cpms.create_procedure":
-                if not self.cpms:
-                    res = {"status": "error", "error": "CPMS adapter not configured"}
-                else:
-                    res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
-                results.append(res)
-            elif tool_name == "cpms.list_procedures":
-                if not self.cpms:
-                    res = {"status": "error", "error": "CPMS adapter not configured"}
-                else:
-                    res = {"status": "success", "procedures": self.cpms.list_procedures()}
-                results.append(res)
-            elif tool_name == "cpms.get_procedure":
-                if not self.cpms:
-                    res = {"status": "error", "error": "CPMS adapter not configured"}
-                else:
-                    res = {"status": "success", "procedure": self.cpms.get_procedure(**params)}
-                results.append(res)
-            elif tool_name == "cpms.create_task":
-                if not self.cpms:
-                    res = {"status": "error", "error": "CPMS adapter not configured"}
-                else:
-                    res = {"status": "success", "task": self.cpms.create_task(**params)}
-                results.append(res)
-            elif tool_name == "cpms.list_tasks":
-                if not self.cpms:
-                    res = {"status": "error", "error": "CPMS adapter not configured"}
-                else:
-                    res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
-                results.append(res)
-            elif tool_name == "procedure.create":
-                if self.use_cpms_for_procs and self.cpms:
-                    res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
-                elif self.procedure_builder:
-                    norm_params = params.copy()
-                    # Normalize to ProcedureBuilder signature (title instead of name)
-                    if "name" in norm_params and "title" not in norm_params:
-                        norm_params["title"] = norm_params.pop("name")
-                    res = {
-                        "status": "success",
-                        "procedure": self.procedure_builder.create_procedure(**norm_params),
-                    }
-                else:
-                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
-                results.append(res)
-            elif tool_name == "procedure.search":
-                if self.use_cpms_for_procs and self.cpms:
-                    try:
-                        procs = self.cpms.list_procedures()
+                        proto_uuid = self.ksg.create_prototype(**params)
+                        res = {"status": "success", "prototype_uuid": proto_uuid}
                     except Exception as exc:
                         res = {"status": "error", "error": str(exc)}
-                    else:
-                        res = {"status": "success", "procedures": procs}
-                elif self.procedure_builder:
-                    res = {"status": "success", "procedures": self.procedure_builder.search_procedures(**params)}
+                elif tool_name == "ksg.create_concept":
+                    try:
+                        concept_params = params.copy()
+                        if not concept_params.get("prototype_uuid"):
+                            # best-effort: use first prototype in memory
+                            for node in self.memory.nodes.values():
+                                if getattr(node, "kind", None) == "Prototype":
+                                    concept_params["prototype_uuid"] = node.uuid
+                                    break
+                        concept_uuid = self.ksg.create_concept(**concept_params)
+                        res = {"status": "success", "concept_uuid": concept_uuid}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "form.autofill":
+                    res = self._autofill_form(params)
                 else:
-                    res = {"status": "error", "error": "ProcedureBuilder not configured"}
-                results.append(res)
-            elif tool_name == "ksg.create_prototype":
-                try:
-                    proto_uuid = self.ksg.create_prototype(**params)
-                    res = {"status": "success", "prototype_uuid": proto_uuid}
-                except Exception as exc:
-                    res = {"status": "error", "error": str(exc)}
-                results.append(res)
-            elif tool_name == "ksg.create_concept":
-                try:
-                    concept_params = params.copy()
-                    if not concept_params.get("prototype_uuid"):
-                        # best-effort: use first prototype in memory
-                        for node in self.memory.nodes.values():
-                            if getattr(node, "kind", None) == "Prototype":
-                                concept_params["prototype_uuid"] = node.uuid
-                                break
-                    concept_uuid = self.ksg.create_concept(**concept_params)
-                    res = {"status": "success", "concept_uuid": concept_uuid}
-                except Exception as exc:
-                    res = {"status": "error", "error": str(exc)}
-                results.append(res)
-            elif tool_name == "form.autofill":
-                res = self._autofill_form(params)
-                results.append(res)
-            else:
-                results.append({"status": "no action taken", "tool": tool_name})
+                    res = {"status": "no action taken", "tool": tool_name}
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "error": str(exc),
+                    "tool": tool_name,
+                    "params": params,
+                    "trace_id": provenance.trace_id,
+                }
+            results.append(res)
             self.log.debug(
                 "tool_result",
                 module="agent",
                 function="_execute_plan",
                 tool=tool_name,
                 params=params,
-                result=results[-1] if results else {},
+                result=res,
                 trace_id=provenance.trace_id,
                 ts=datetime.now(timezone.utc).isoformat(),
             )
@@ -714,7 +745,7 @@ class PersonalAssistantAgent:
                 {
                     "tool": tool_name,
                     "params": params,
-                    "result": results[-1] if results else {"status": "no action taken"},
+                    "result": res,
                     "trace_id": provenance.trace_id,
                     "ts": datetime.now(timezone.utc).isoformat(),
                 },

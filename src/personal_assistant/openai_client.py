@@ -65,8 +65,9 @@ class FakeOpenAIClient:
     Simple fake for tests to avoid network calls.
     """
 
-    def __init__(self, chat_response: str, embedding: Optional[List[float]] = None):
-        self.chat_response = chat_response
+    def __init__(self, chat_response: str = None, embedding: Optional[List[float]] = None):
+        # Default to a minimal JSON plan so agent flows do not fallback when unset
+        self.chat_response = chat_response or '{"intent":"inform","steps":[]}'
         self.embedding = embedding or [0.0, 0.0, 0.0]
         self.last_messages: Optional[List[Dict[str, str]]] = None
         self.last_response_format: Optional[Dict[str, Any]] = None
