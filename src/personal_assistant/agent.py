@@ -705,6 +705,18 @@ class PersonalAssistantAgent:
                         # Normalize to ProcedureBuilder signature (title instead of name)
                         if "name" in norm_params and "title" not in norm_params:
                             norm_params["title"] = norm_params.pop("name")
+                        if "steps" in norm_params:
+                            norm_steps = []
+                            for idx, st in enumerate(norm_params.get("steps") or []):
+                                norm_steps.append(
+                                    {
+                                        "title": st.get("title") or st.get("tool") or f"step-{idx}",
+                                        "tool": st.get("tool"),
+                                        "payload": {"tool": st.get("tool"), "params": st.get("params", {})},
+                                        "order": st.get("order", idx),
+                                    }
+                                )
+                            norm_params["steps"] = norm_steps
                         res = {
                             "status": "success",
                             "procedure": self.procedure_builder.create_procedure(**norm_params),
@@ -894,6 +906,39 @@ class PersonalAssistantAgent:
         except Exception:
             return None
 
+    def _load_procedure_steps(self, proc: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Hydrate stored procedure steps from memory (ProcedureBuilder format).
+        """
+        proc_uuid = proc.get("uuid") or proc.get("_key")
+        if not proc_uuid:
+            return []
+        try:
+            all_steps = self.memory.search("", top_k=500, filters={"kind": "Step"}, query_embedding=None)
+        except Exception:
+            return []
+        steps_with_order = []
+        for st in all_steps:
+            props = st.get("props", {}) if isinstance(st, dict) else {}
+            if props.get("procedure_uuid") != proc_uuid:
+                continue
+            payload = props.get("payload") or {}
+            tool = props.get("tool") or payload.get("tool") or props.get("title")
+            params = payload.get("params") if isinstance(payload, dict) else {}
+            steps_with_order.append(
+                (
+                    props.get("order", 0),
+                    {
+                        "tool": tool,
+                        "params": params or {},
+                        "comment": f"Reused step {props.get('title') or tool}",
+                    },
+                )
+            )
+        # Sort by order if present
+        steps_with_order.sort(key=lambda t: t[0])
+        return [s for _, s in steps_with_order]
+
     def _fallback_plan(self, intent: str, user_request: str) -> Optional[Dict[str, Any]]:
         """
         Provide a basic deterministic plan when LLM planning fails.
@@ -985,6 +1030,16 @@ class PersonalAssistantAgent:
         """
         if proc_matches:
             proc = proc_matches[0]
+            steps = self._load_procedure_steps(proc)
+            if steps:
+                return {
+                    "intent": intent,
+                    "steps": steps,
+                    "reuse": True,
+                    "procedure_uuid": proc.get("uuid"),
+                    "raw_llm": f"Reusing stored procedure {proc.get('props', {}).get('title', '')}".strip(),
+                }
+            # Fallback to search if we cannot hydrate steps
             return {
                 "intent": intent,
                 "steps": [
@@ -1023,7 +1078,8 @@ class PersonalAssistantAgent:
             steps.append(
                 {
                     "title": title,
-                    "payload": step.get("params", {}),
+                    "tool": step.get("tool"),
+                    "payload": {"tool": step.get("tool"), "params": step.get("params", {})},
                     "order": idx,
                 }
             )

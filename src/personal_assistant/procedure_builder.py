@@ -62,8 +62,10 @@ class ProcedureBuilder:
                 props={
                     "title": step.get("title"),
                     "payload": step.get("payload"),
+                    "tool": step.get("tool"),
                     "order": step.get("order", idx),
                     "guard_text": guards.get(idx),
+                    "procedure_uuid": proc_node.uuid,
                 },
             )
             node.llm_embedding = self.embed_fn(step.get("title", "") or "")
