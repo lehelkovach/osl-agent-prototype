@@ -65,6 +65,8 @@ class ProcedureBuilder:
                     "tool": step.get("tool"),
                     "order": step.get("order", idx),
                     "guard_text": guards.get(idx),
+                    "guard": step.get("guard"),
+                    "on_fail": step.get("on_fail"),
                     "procedure_uuid": proc_node.uuid,
                 },
             )

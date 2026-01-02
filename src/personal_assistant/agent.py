@@ -315,6 +315,19 @@ class PersonalAssistantAgent:
             plan.setdefault("trace_id", provenance.trace_id)
             execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
 
+        # If the plan carries a low confidence score, ask the user for approval before executing.
+        try:
+            confidence = float(plan.get("confidence"))
+        except Exception:
+            confidence = None
+        if confidence is not None and confidence < float(os.getenv("PLAN_MIN_CONFIDENCE", 0.9)):
+            summary = plan.get("raw_llm") or "I can attempt this, but confidence is low. Approve or provide corrections?"
+            plan["fallback"] = True
+            plan["raw_llm"] = summary + " (Awaiting your approval.)"
+            plan.setdefault("intent", intent)
+            plan.setdefault("trace_id", provenance.trace_id)
+            execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
+
         # Persist selector improvements back to stored procedures when reuse + fallbacks succeed.
         proc_uuid = plan.get("procedure_uuid")
         if proc_uuid and execution_results.get("status") == "completed":
@@ -324,11 +337,11 @@ class PersonalAssistantAgent:
                 pass
 
         # Persist executed plan as a Procedure with basic success/failure stats
-        try:
-            self._persist_procedure_run(user_request, plan, execution_results, provenance)
-        except Exception:
-            # Persistence should not break the main loop
-            pass
+            try:
+                self._persist_procedure_run(user_request, plan, execution_results, provenance)
+            except Exception:
+                # Persistence should not break the main loop
+                pass
         self._emit(
             "execution_completed",
             {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
@@ -1041,6 +1054,36 @@ class PersonalAssistantAgent:
                 except Exception:
                     continue
 
+    def _guard_allows(self, guard: Optional[Dict[str, Any]], last_result: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Evaluate a simple guard dict:
+          - {"type":"equals", "path":"status", "value":"success"}
+          - {"type":"not_equals", "path":"status", "value":"error"}
+          - {"type":"exists", "path":"params.selector"}
+        """
+        if not guard:
+            return True
+        gtype = guard.get("type")
+        path = guard.get("path")
+        target = guard.get("value")
+        if not path or not gtype:
+            return True
+        def _get(d, path_str):
+            cur = d or {}
+            for part in path_str.split("."):
+                if isinstance(cur, dict):
+                    cur = cur.get(part)
+                else:
+                    return None
+            return cur
+        val = _get(last_result or {}, path)
+        if gtype == "equals":
+            return val == target
+        if gtype == "not_equals":
+            return val != target
+        if gtype == "exists":
+            return val is not None
+        return True
     def _fallback_plan(self, intent: str, user_request: str) -> Optional[Dict[str, Any]]:
         """
         Provide a basic deterministic plan when LLM planning fails.
