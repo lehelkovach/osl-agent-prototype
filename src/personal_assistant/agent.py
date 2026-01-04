@@ -15,6 +15,7 @@ from src.personal_assistant.events import EventBus, NullEventBus
 from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.knowshowgo import KnowShowGoAPI
+from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
 from src.personal_assistant.logging_setup import get_logger
 
@@ -51,7 +52,8 @@ class PersonalAssistantAgent:
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
         self.form_retriever = FormDataRetriever(memory)
-        self.ksg = ksg or KnowShowGoAPI(memory)
+        self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=self._embed_text)
+        self.dag_executor = DAGExecutor(memory, queue_manager=self.queue_manager)
         self.log = get_logger("agent")
         # Flag to route procedure ops through CPMS if present
         if use_cpms_for_procs is None:
@@ -109,6 +111,30 @@ class PersonalAssistantAgent:
             )
         else:
             proc_matches = []
+
+        # Concept search in KnowShowGo (embedding-based)
+        concept_matches = []
+        if self.ksg:
+            try:
+                concept_matches = self.ksg.search_concepts(
+                    user_request, top_k=3, query_embedding=query_embedding
+                )
+                if concept_matches:
+                    memory_results.extend(concept_matches)
+                    self._emit(
+                        "concept_recall",
+                        {
+                            "query": user_request,
+                            "matches": concept_matches,
+                            "trace_id": provenance.trace_id,
+                        },
+                    )
+            except Exception as exc:
+                self.log.warning(
+                    "concept_search_error",
+                    error=str(exc),
+                    trace_id=provenance.trace_id,
+                )
         self._emit(
             "rag_query",
             {
@@ -231,9 +257,11 @@ class PersonalAssistantAgent:
         # Confidence/uncertainty handling: if we have no actionable steps after fallback/reuse
         # and the intent is not a direct "remember"/"task"/"schedule", ask the user for guidance.
         if (not plan.get("steps")) and intent not in ("remember", "task", "schedule"):
+            base_msg = plan.get("raw_llm")
             clarification = (
-                "I need your instructions. Please describe the steps or procedure so I can save it "
-                "and queue it."
+                f"{base_msg} I need your instructions. Please describe the steps or procedure so I can save it and queue it."
+                if base_msg
+                else "Hello! I'm ready to help. I need your instructions. Please describe the steps or procedure so I can save it and queue it."
             )
             plan["fallback"] = True
             plan["raw_llm"] = clarification
@@ -314,6 +342,12 @@ class PersonalAssistantAgent:
             plan.setdefault("intent", intent)
             plan.setdefault("trace_id", provenance.trace_id)
             execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
+            # Emit input_needed event for TTS notification
+            self._emit("input_needed", {
+                "message": "Execution error. Need guidance to proceed.",
+                "play_chime": True,
+                "trace_id": provenance.trace_id
+            })
 
         # If the plan carries a low confidence score, ask the user for approval before executing.
         try:
@@ -327,6 +361,12 @@ class PersonalAssistantAgent:
             plan.setdefault("intent", intent)
             plan.setdefault("trace_id", provenance.trace_id)
             execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
+            # Emit input_needed event for TTS notification
+            self._emit("input_needed", {
+                "message": "Low confidence plan. Need approval to proceed.",
+                "play_chime": True,
+                "trace_id": provenance.trace_id
+            })
 
         # Persist selector improvements back to stored procedures when reuse + fallbacks succeed.
         proc_uuid = plan.get("procedure_uuid")
@@ -337,11 +377,28 @@ class PersonalAssistantAgent:
                 pass
 
         # Persist executed plan as a Procedure with basic success/failure stats
+        try:
+            self._persist_procedure_run(user_request, plan, execution_results, provenance)
+        except Exception:
+            # Persistence should not break the main loop
+            pass
+        
+        # Auto-generalize: If execution succeeded and multiple similar concepts were found,
+        # automatically merge them into a generalized pattern
+        if execution_results.get("status") == "completed" and self.ksg:
             try:
-                self._persist_procedure_run(user_request, plan, execution_results, provenance)
-            except Exception:
-                # Persistence should not break the main loop
-                pass
+                self._auto_generalize_if_applicable(
+                    concept_matches=concept_matches,
+                    execution_results=execution_results,
+                    provenance=provenance
+                )
+            except Exception as exc:
+                self.log.warning(
+                    "auto_generalize_error",
+                    error=str(exc),
+                    trace_id=provenance.trace_id,
+                )
+        
         self._emit(
             "execution_completed",
             {"plan": plan, "results": execution_results, "trace_id": provenance.trace_id},
@@ -820,6 +877,99 @@ class PersonalAssistantAgent:
                         res = {"status": "success", "concept_uuid": concept_uuid}
                     except Exception as exc:
                         res = {"status": "error", "error": str(exc)}
+                elif tool_name == "ksg.create_concept_recursive":
+                    try:
+                        concept_params = params.copy()
+                        if not concept_params.get("prototype_uuid"):
+                            # best-effort: use first prototype in memory
+                            for node in self.memory.nodes.values():
+                                if getattr(node, "kind", None) == "Prototype":
+                                    concept_params["prototype_uuid"] = node.uuid
+                                    break
+                        concept_uuid = self.ksg.create_concept_recursive(**concept_params)
+                        res = {"status": "success", "concept_uuid": concept_uuid}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "ksg.search_concepts":
+                    try:
+                        results = self.ksg.search_concepts(**params)
+                        res = {"status": "success", "concepts": results}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "ksg.store_cpms_pattern":
+                    try:
+                        pattern_uuid = self.ksg.store_cpms_pattern(**params)
+                        res = {"status": "success", "pattern_uuid": pattern_uuid}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "cpms.detect_form":
+                    if not self.cpms:
+                        res = {"status": "error", "error": "CPMS adapter not configured"}
+                    else:
+                        try:
+                            # Extract HTML and screenshot from params
+                            html = params.get("html") or params.get("dom") or ""
+                            screenshot_path = params.get("screenshot_path") or params.get("screenshot")
+                            url = params.get("url")
+                            dom_snapshot = params.get("dom_snapshot")
+                            
+                            pattern_data = self.cpms.detect_form_pattern(
+                                html=html,
+                                screenshot_path=screenshot_path,
+                                url=url,
+                                dom_snapshot=dom_snapshot
+                            )
+                            res = {"status": "success", "pattern": pattern_data}
+                        except Exception as exc:
+                            res = {"status": "error", "error": str(exc)}
+                elif tool_name == "dag.execute":
+                    try:
+                        concept_uuid = params.get("concept_uuid")
+                        if not concept_uuid:
+                            res = {"status": "error", "error": "concept_uuid required"}
+                        else:
+                            def enqueue_cmd(cmd: Dict[str, Any]):
+                                # Enqueue tool command to priority queue
+                                if self.queue_manager:
+                                    # Create a Node for the queue item
+                                    from src.personal_assistant.models import Node
+                                    task_node = Node(
+                                        kind="Task",
+                                        labels=["dag_command"],
+                                        props={
+                                            "title": cmd.get("tool", "dag_command"),
+                                            "priority": params.get("priority", 5),
+                                            **cmd
+                                        }
+                                    )
+                                    self.queue_manager.enqueue(task_node, provenance)
+                            result = self.dag_executor.execute_dag(concept_uuid, context=params.get("context"), enqueue_fn=enqueue_cmd)
+                            res = {"status": "success", "dag_result": result}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "vault.query_credentials":
+                    try:
+                        # Query vault for credentials associated with a concept or URL
+                        query = params.get("query") or params.get("url") or ""
+                        concept_uuid = params.get("concept_uuid")
+                        results = self.memory.search(
+                            query, top_k=5, filters={"kind": "Credential"}, query_embedding=self._embed_text(query) if query else None
+                        )
+                        # Also check for Identity/PaymentMethod if needed
+                        if params.get("include_identity"):
+                            identity_results = self.memory.search(
+                                query, top_k=3, filters={"kind": "Identity"}, query_embedding=self._embed_text(query) if query else None
+                            )
+                            results.extend(identity_results)
+                        res = {"status": "success", "credentials": results}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "ksg.generalize_concepts":
+                    try:
+                        parent_uuid = self.ksg.generalize_concepts(**params)
+                        res = {"status": "success", "generalized_concept_uuid": parent_uuid}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
                 elif tool_name == "form.autofill":
                     res = self._autofill_form(params)
                 else:
@@ -987,7 +1137,12 @@ class PersonalAssistantAgent:
                 continue
             payload = props.get("payload") or {}
             tool = props.get("tool") or payload.get("tool") or props.get("title")
-            params = payload.get("params") if isinstance(payload, dict) else {}
+            params = {}
+            if isinstance(payload, dict):
+                params = payload.get("params") or {}
+                # If params are absent but payload has fields (e.g., url), treat payload as params
+                if not params:
+                    params = {k: v for k, v in payload.items() if k not in ("tool", "params")}
             steps_with_order.append(
                 (
                     props.get("order", 0),
@@ -1158,6 +1313,175 @@ class PersonalAssistantAgent:
             }
         return None
 
+    def _auto_generalize_if_applicable(
+        self,
+        concept_matches: List[Dict[str, Any]],
+        execution_results: Dict[str, Any],
+        provenance: Provenance,
+    ) -> None:
+        """
+        Auto-generalize via vector embeddings: If execution succeeded and 2+ similar concepts
+        were found (matched via vector embedding similarity), automatically merge them into a
+        generalized pattern.
+        
+        This implements automatic learning: when multiple similar procedures work,
+        the agent learns a general pattern by:
+        1. Averaging their vector embeddings dimension-wise to create a centroid embedding
+        2. Creating a generalized concept with the averaged embedding
+        3. Linking exemplars to the generalized pattern
+        
+        Only concepts with vector embeddings are used (those matched via embedding similarity).
+        """
+        # Only generalize if execution succeeded
+        if execution_results.get("status") != "completed":
+            return
+        
+        # Need at least 2 similar concepts to generalize
+        if not concept_matches or len(concept_matches) < 2:
+            return
+        
+        # Filter to concepts that have vector embeddings and are procedures/patterns
+        # Only generalize concepts that were matched via embedding similarity (fuzzy matching)
+        procedure_concepts = []
+        for match in concept_matches:
+            # Extract embedding (vector embedding for similarity matching)
+            embedding = match.get("llm_embedding") if isinstance(match, dict) else getattr(match, "llm_embedding", None)
+            if not embedding:
+                continue  # Skip concepts without vector embeddings
+            
+            # Check if it's a procedure concept (has steps or is a procedure)
+            props = match.get("props", {}) if isinstance(match, dict) else getattr(match, "props", {})
+            if "steps" in props or props.get("name", "").lower().startswith(("login", "procedure", "task")):
+                procedure_concepts.append(match)
+        
+        # Need at least 2 procedure concepts with vector embeddings
+        if len(procedure_concepts) < 2:
+            return
+        
+        # Extract concept UUIDs and vector embeddings
+        # Only use concepts that have embeddings (matched via vector similarity)
+        concept_uuids = []
+        embeddings = []  # Vector embeddings list
+        concept_names = []
+        
+        for concept in procedure_concepts[:3]:  # Limit to top 3 for generalization
+            uuid_val = concept.get("uuid") if isinstance(concept, dict) else getattr(concept, "uuid", None)
+            if not uuid_val:
+                continue
+            
+            # Extract vector embedding (required for generalization)
+            embedding = concept.get("llm_embedding") if isinstance(concept, dict) else getattr(concept, "llm_embedding", None)
+            if not embedding or not isinstance(embedding, list):
+                continue  # Must have vector embedding
+            
+            name = concept.get("props", {}).get("name") if isinstance(concept, dict) else getattr(concept, "props", {}).get("name", "")
+            
+            concept_uuids.append(uuid_val)
+            embeddings.append(embedding)  # Store vector embedding
+            concept_names.append(name)
+        
+        # Need at least 2 concepts with valid vector embeddings
+        if len(concept_uuids) < 2 or len(embeddings) < 2:
+            return
+        
+        # Average vector embeddings for generalized pattern
+        # Vector embeddings are averaged dimension-wise to create a centroid embedding
+        # This represents the "average" semantic meaning of the exemplars in embedding space
+        def average_vector_embeddings(emb_list):
+            """
+            Average vector embeddings dimension-wise to create centroid.
+            Returns a centroid embedding that represents the average semantic meaning
+            in the embedding vector space.
+            """
+            if not emb_list:
+                return None
+            if len(emb_list) == 1:
+                return emb_list[0]
+            
+            # Validate all embeddings have same dimensionality
+            dim = len(emb_list[0])
+            for emb in emb_list[1:]:
+                if len(emb) != dim:
+                    self.log.warning(
+                        "embedding_dimension_mismatch",
+                        expected_dim=dim,
+                        actual_dim=len(emb),
+                        trace_id=provenance.trace_id,
+                    )
+                    return emb_list[0]  # Return first if mismatch
+            
+            # Average each dimension: centroid of vector embeddings in embedding space
+            # This creates a new embedding vector that is the average of the input vectors
+            averaged = [sum(emb[i] for emb in emb_list) / len(emb_list) for i in range(dim)]
+            return averaged
+        
+        # Create generalized embedding by averaging vector embeddings
+        generalized_embedding = average_vector_embeddings(embeddings)
+        if not generalized_embedding:
+            self.log.warning(
+                "generalization_no_embedding",
+                trace_id=provenance.trace_id,
+            )
+            return
+        
+        # Extract common steps (simplified: use steps from first concept as template)
+        # In a more sophisticated implementation, would compare and extract truly common steps
+        first_concept = procedure_concepts[0]
+        first_props = first_concept.get("props", {}) if isinstance(first_concept, dict) else getattr(first_concept, "props", {})
+        common_steps = first_props.get("steps", [])
+        
+        # Create generalized name
+        generalized_name = f"General {concept_names[0].split()[0] if concept_names else 'Procedure'}"
+        if len(concept_names) > 1:
+            # Try to find common prefix/pattern
+            words = [name.split() for name in concept_names if name]
+            if words:
+                common_prefix = words[0][0] if words[0] else "General"
+                generalized_name = f"General {common_prefix} Procedure"
+        
+        # Find Procedure prototype
+        proto_uuid = None
+        proto_results = self.memory.search("Procedure", top_k=1, filters={"kind": "Prototype"})
+        if proto_results:
+            proto_uuid = proto_results[0].get("uuid") if isinstance(proto_results[0], dict) else getattr(proto_results[0], "uuid", None)
+        
+        # Create generalized pattern using averaged vector embeddings
+        try:
+            generalized_uuid = self.ksg.generalize_concepts(
+                exemplar_uuids=concept_uuids,
+                generalized_name=generalized_name,
+                generalized_description=f"Generalized pattern learned from {len(concept_uuids)} exemplars via vector embedding similarity",
+                generalized_embedding=generalized_embedding,  # Averaged vector embedding
+                prototype_uuid=proto_uuid,
+                provenance=provenance,
+            )
+            
+            self.log.info(
+                "auto_generalized",
+                module="agent",
+                function="_auto_generalize_if_applicable",
+                exemplar_count=len(concept_uuids),
+                generalized_uuid=generalized_uuid,
+                embedding_dim=len(generalized_embedding),
+                trace_id=provenance.trace_id,
+            )
+            
+            self._emit(
+                "concept_generalized",
+                {
+                    "exemplar_uuids": concept_uuids,
+                    "generalized_uuid": generalized_uuid,
+                    "generalized_name": generalized_name,
+                    "trace_id": provenance.trace_id,
+                },
+            )
+        except Exception as exc:
+            self.log.warning(
+                "generalize_failed",
+                error=str(exc),
+                trace_id=provenance.trace_id,
+            )
+
     def _extract_url(self, text: str) -> Optional[str]:
         """Best-effort URL/domain extractor for web fallback."""
         # Simple domain/URL finder
@@ -1177,6 +1501,20 @@ class PersonalAssistantAgent:
             proc = proc_matches[0]
             steps = self._load_procedure_steps(proc)
             if steps:
+                if len(steps) <= 1:
+                    return {
+                        "intent": intent,
+                        "steps": [
+                            {
+                                "tool": "procedure.search",
+                                "params": {"query": user_request, "top_k": 3},
+                                "comment": f"Reuse procedure match {proc.get('props', {}).get('title', '')}",
+                            }
+                        ],
+                        "reuse": True,
+                        "procedure_uuid": proc.get("uuid"),
+                        "raw_llm": f"Reusing stored procedure {proc.get('props', {}).get('title', '')}".strip(),
+                    }
                 return {
                     "intent": intent,
                     "steps": steps,
@@ -1346,6 +1684,13 @@ class PersonalAssistantAgent:
         )
         ask_for_name = any(
             kw in lower_q for kw in ("name", "who am", "what is my name", "my name")
+        ) or (
+            not user_request
+            and any(
+                (item.get("kind") if isinstance(item, dict) else getattr(item, "kind", None))
+                in ("Person", "Name")
+                for item in memory_results
+            )
         )
         # If the query asks for a note or concept, surface note/description first
         bias_note = any(kw in lower_q for kw in ("note", "concept", "about"))
@@ -1429,7 +1774,16 @@ class PersonalAssistantAgent:
                 if isinstance(props.get("name"), str) and props["name"].strip():
                     clean = props["name"].strip()
                     return f"Your name is {clean}."
-            for kind in ("Person", "Name"):
+                if isinstance(props.get("value"), str) and props["value"].strip():
+                    clean = props["value"].strip()
+                    return f"Your name is {clean}."
+                for key in ("note", "description", "content", "title"):
+                    val = props.get(key)
+                    if isinstance(val, str):
+                        extracted = self._extract_person_name(val)
+                        if extracted:
+                            return f"Your name is {extracted}."
+            for kind in ("Person", "Name", "Concept"):
                 try:
                     hits = self.memory.search("", top_k=50, filters={"kind": kind}, query_embedding=None)
                 except Exception:
@@ -1439,6 +1793,15 @@ class PersonalAssistantAgent:
                     if isinstance(props.get("name"), str) and props["name"].strip():
                         clean = props["name"].strip()
                         return f"Your name is {clean}."
+                    if isinstance(props.get("value"), str) and props["value"].strip():
+                        clean = props["value"].strip()
+                        return f"Your name is {clean}."
+                    for key in ("note", "description", "content", "title"):
+                        val = props.get(key)
+                        if isinstance(val, str):
+                            extracted = self._extract_person_name(val)
+                            if extracted:
+                                return f"Your name is {extracted}."
 
         scored: List[tuple[int, str]] = []
         for item in memory_results:
