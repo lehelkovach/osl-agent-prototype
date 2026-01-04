@@ -1,0 +1,71 @@
+# Text-to-Speech Configuration for Cursor IDE
+# This file configures TTS notifications for when tasks complete and prompts are ready
+
+tts:
+  # Enable/disable TTS
+  enabled: true
+  
+  # TTS engine: "system" (uses espeak/spd-say/festival on Linux), "pyttsx3", or "gtts"
+  # - system: Uses system TTS (no extra dependencies, works offline)
+  # - pyttsx3: Cross-platform Python TTS (requires: pip install pyttsx3)
+  # - gtts: Google Text-to-Speech (requires: pip install gtts playsound, needs internet)
+  engine: system
+  
+  # Voice selection (for pyttsx3, specify voice name or ID)
+  # For system TTS on Linux, voices are managed by the TTS engine
+  voice: null
+  
+  # Speech rate in words per minute (default: 150)
+  rate: 150
+  
+  # Volume (0.0 to 1.0, default: 0.8)
+  volume: 0.8
+  
+  # Announce when tasks are completed
+  announce_completions: true
+  
+  # Announce when prompts are ready in chat
+  announce_prompts: true
+  
+  # Custom phrases
+  completion_phrase: "Task completed"
+  prompt_phrase: "Ready for your input"
+  
+  # Automatic summarization to keep announcements concise
+  summarize: true
+  max_announcement_length: 20  # words
+  
+  # Speech queue settings
+  max_queue_size: 10
+  
+  # Audio notifications for input needed
+  input_chime_enabled: true
+  input_chime_path: null  # Path to custom chime sound file (optional)
+
+# Speech-to-Text Configuration
+stt:
+  # Enable/disable STT
+  enabled: false  # Set to true to enable voice commands
+  
+  # STT engine: "whisper", "google", "vosk", or "system"
+  # - whisper: OpenAI Whisper (local, requires: pip install openai-whisper sounddevice)
+  # - google: Google Speech-to-Text (requires: pip install SpeechRecognition, needs internet)
+  # - vosk: Offline STT (requires: pip install vosk sounddevice, needs model download)
+  # - system: System STT (limited support)
+  engine: "whisper"
+  
+  # Model name/path (for whisper/vosk)
+  model: "base"  # For whisper: "tiny", "base", "small", "medium", "large"
+                  # For vosk: path to downloaded model directory
+  
+  # Language code (default: "en")
+  language: "en"
+  
+  # Continuous listening mode
+  continuous: false
+  
+  # Browser-based STT (Web Speech API) settings for chat UI
+  browser_stt:
+    enabled: true  # Enable microphone button in chat UI
+    auto_send_delay: 3000  # Auto-send after 3 seconds of silence (milliseconds)
+

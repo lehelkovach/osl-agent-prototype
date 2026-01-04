@@ -1,0 +1,22 @@
+I need to implement CPMS integration for form pattern detection. 
+
+Context: This is the osl-agent-prototype project. The agent-side integration is ready, but CPMS-specific implementation is needed.
+
+Please:
+1. Read docs/cpms-quickstart.md for immediate first steps
+2. Review docs/cpms-integration-plan.md for full task breakdown
+3. Start with Task 1: Implement full CPMS pattern matching API integration in src/personal_assistant/cpms_adapter.py
+
+The current detect_form_pattern() method has a fallback implementation but needs to call the real CPMS API. I need to:
+- Investigate the CPMS API (github.com/lehelkovach/cpms) to understand match_pattern endpoint
+- Build observations from HTML + screenshots in CPMS format
+- Call CPMS API and parse the response
+- Return structured pattern data matching the format in the integration plan
+
+Key files:
+- src/personal_assistant/cpms_adapter.py (main work location)
+- The agent already has cpms.detect_form tool wired up
+- KnowShowGo pattern storage (ksg.store_cpms_pattern) is already implemented
+
+Let's start by examining the CPMS repository and understanding the API, then implement the integration.
+

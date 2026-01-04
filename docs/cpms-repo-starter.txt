@@ -1,0 +1,27 @@
+I need to implement CPMS API features to support osl-agent-prototype integration.
+
+Context: The osl-agent-prototype needs CPMS for form pattern detection. The agent-side integration is ready, but CPMS needs to provide specific APIs.
+
+Please:
+1. Review docs/cpms-repo-tasks.md for full requirements
+2. Examine the current CPMS repository (github.com/lehelkovach/cpms)
+3. Identify what's already implemented vs what needs to be added
+4. Start with Task 1: Implement/verify Pattern Matching API endpoint
+
+The agent expects:
+- POST endpoint for pattern matching (match_pattern)
+- Request: HTML + screenshot/observation
+- Response: Pattern data with fields (email, password, submit), selectors, confidence scores
+
+Key requirements:
+- Detect login forms (email + password + submit)
+- Extract CSS selectors and XPath
+- Return structured pattern data matching format in cpms-repo-tasks.md
+- Support pattern storage/retrieval for reuse
+
+Also need to update cpms-client Python package with:
+- match_pattern() method matching expected signature
+- Pattern storage methods (create_pattern, get_pattern, list_patterns)
+
+Let's start by examining the current CPMS codebase structure and API endpoints, then implement what's missing.
+

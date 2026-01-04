@@ -342,7 +342,7 @@ class PersonalAssistantAgent:
             plan.setdefault("intent", intent)
             plan.setdefault("trace_id", provenance.trace_id)
             execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
-            # Emit input_needed event for TTS notification
+            # Emit input_needed event
             self._emit("input_needed", {
                 "message": "Execution error. Need guidance to proceed.",
                 "play_chime": True,
@@ -361,7 +361,7 @@ class PersonalAssistantAgent:
             plan.setdefault("intent", intent)
             plan.setdefault("trace_id", provenance.trace_id)
             execution_results = {"status": "ask_user", "trace_id": provenance.trace_id}
-            # Emit input_needed event for TTS notification
+            # Emit input_needed event
             self._emit("input_needed", {
                 "message": "Low confidence plan. Need approval to proceed.",
                 "play_chime": True,

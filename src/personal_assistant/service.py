@@ -1,6 +1,7 @@
-from typing import List
+from typing import List, Optional
 import argparse
 import yaml
+import json
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -35,8 +36,82 @@ class EventCollectorBus(EventBus):
         await super().emit(event_type, payload)
 
 
+def _build_detailed_response(result: dict, raw_llm: Optional[str], events: List[dict]) -> str:
+    """Build a detailed, verbose response for chat display."""
+    plan = result.get("plan", {})
+    execution_results = result.get("execution_results", {})
+    status = execution_results.get("status", "unknown")
+    steps = plan.get("steps", [])
+    
+    parts = []
+    
+    # Start with raw LLM response if available
+    if raw_llm:
+        parts.append(raw_llm)
+    
+    # Add execution summary
+    if status == "completed":
+        parts.append(f"\n\n**Execution Summary:**")
+        parts.append(f"Status: ✅ Completed successfully")
+        
+        if steps:
+            parts.append(f"\n**Steps Executed ({len(steps)}):**")
+            for i, step in enumerate(steps, 1):
+                tool = step.get("tool", "unknown")
+                params = step.get("params", {})
+                comment = step.get("comment", "")
+                
+                # Find corresponding result
+                step_result = None
+                if isinstance(execution_results.get("steps"), list) and i <= len(execution_results["steps"]):
+                    step_result = execution_results["steps"][i - 1]
+                
+                step_status = "✅" if step_result and step_result.get("status") in ("success", "completed") else "⏳"
+                parts.append(f"{step_status} Step {i}: {tool}")
+                if comment:
+                    parts.append(f"   └─ {comment}")
+                if params:
+                    # Show key params (truncate long values)
+                    key_params = {}
+                    for k, v in list(params.items())[:3]:  # Show first 3 params
+                        if isinstance(v, str) and len(v) > 50:
+                            key_params[k] = v[:47] + "..."
+                        else:
+                            key_params[k] = v
+                    if key_params:
+                        parts.append(f"   └─ Params: {json.dumps(key_params, indent=2)}")
+    elif status == "error":
+        error = execution_results.get("error", "Unknown error")
+        parts.append(f"\n\n**Execution Summary:**")
+        parts.append(f"Status: ❌ Error")
+        parts.append(f"Error: {error}")
+    elif status == "ask_user":
+        parts.append(f"\n\n**Execution Summary:**")
+        parts.append(f"Status: ⏸️ Waiting for input")
+    
+    # Add event summary if available
+    if events:
+        event_types = {}
+        for event in events:
+            event_type = event.get("type", "unknown")
+            event_types[event_type] = event_types.get(event_type, 0) + 1
+        
+        if len(event_types) > 0:
+            parts.append(f"\n**Events:** {len(events)} total")
+            for event_type, count in list(event_types.items())[:5]:  # Show top 5
+                parts.append(f"  - {event_type}: {count}")
+    
+    return "\n".join(parts) if parts else "Ready to help."
+
+
 def build_app(agent: PersonalAssistantAgent) -> FastAPI:
     app = FastAPI()
+    
+    @app.on_event("startup")
+    async def startup_event():
+        """Initialize service."""
+        log = get_logger("service")
+        log.info("service_starting")
     configure_logging()
     log = get_logger("service")
     chat_history: List[dict] = []
@@ -67,6 +142,11 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
             #input { display:flex; padding:8px; gap:8px; border-top:1px solid #ccc; }
             textarea { flex:1; height:60px; }
             button { padding:8px 12px; }
+            #mic-btn { padding:8px 12px; min-width:50px; }
+            #mic-btn.listening { background:#f00; color:#fff; animation:pulse 1s infinite; }
+            @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+            #stt-status { font-size:12px; color:#666; padding:4px; }
+            #stt-status.listening { color:#f00; font-weight:bold; }
             #runslist { border-right:1px solid #ccc; min-width:200px; }
             #runcontainer { display:flex; flex:1; }
           </style>
@@ -91,7 +171,11 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
             </div>
           </div>
           <div id="input">
-            <textarea id="msg" placeholder="Type a message"></textarea>
+            <div style="display:flex; flex-direction:column; flex:1;">
+              <textarea id="msg" placeholder="Type a message or click mic to speak"></textarea>
+              <div id="stt-status"></div>
+            </div>
+            <button id="mic-btn" onclick="toggleSpeechRecognition()" title="Click to start/stop voice input">🎤</button>
             <button onclick="send()">Send</button>
           </div>
           <script>
@@ -128,13 +212,179 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
               const rl = document.getElementById('runslist');
               rl.innerHTML = runs.map(r => '<div><a href="#" onclick="loadRun(\\''+r.trace_id+'\\')">'+r.trace_id+'</a> ('+r.events+' events)</div>').join('');
             }
+            // Speech-to-Text configuration
+            let recognition = null;
+            let isListening = false;
+            let autoSendDelay = 3000; // Default 3 seconds, will be loaded from config
+            let autoSendTimer = null;
+            let finalTranscript = '';
+            
+            // Load STT config from server
+            async function loadSTTConfig() {
+              try {
+                const resp = await fetch('/config/stt');
+                const config = await resp.json();
+                if (config.auto_send_delay) {
+                  autoSendDelay = config.auto_send_delay;
+                }
+                if (!config.enabled) {
+                  document.getElementById('mic-btn').style.display = 'none';
+                }
+              } catch (e) {
+                console.warn('Could not load STT config, using defaults');
+              }
+            }
+            loadSTTConfig();
+            
+            // Initialize Web Speech API
+            if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+              const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+              recognition = new SpeechRecognition();
+              recognition.continuous = true;
+              recognition.interimResults = true;
+              recognition.lang = 'en-US';
+              
+              recognition.onstart = () => {
+                isListening = true;
+                document.getElementById('mic-btn').classList.add('listening');
+                document.getElementById('stt-status').textContent = 'Listening...';
+                document.getElementById('stt-status').classList.add('listening');
+              };
+              
+              recognition.onresult = (event) => {
+                let interimTranscript = '';
+                finalTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                  const transcript = event.results[i][0].transcript;
+                  if (event.results[i].isFinal) {
+                    finalTranscript += transcript + ' ';
+                  } else {
+                    interimTranscript += transcript;
+                  }
+                }
+                
+                // Update textarea with current transcript
+                const msgEl = document.getElementById('msg');
+                const currentText = finalTranscript + interimTranscript;
+                msgEl.value = currentText;
+                
+                // Update status
+                if (interimTranscript) {
+                  document.getElementById('stt-status').textContent = 'Listening: ' + interimTranscript;
+                } else if (finalTranscript) {
+                  document.getElementById('stt-status').textContent = 'Heard: ' + finalTranscript.trim();
+                }
+                
+                // Reset auto-send timer on ANY new speech (interim or final)
+                if (autoSendTimer) {
+                  clearTimeout(autoSendTimer);
+                  autoSendTimer = null;
+                }
+                
+                // Set auto-send timer - will fire after 3 seconds of no new speech
+                if (currentText.trim()) {
+                  autoSendTimer = setTimeout(() => {
+                    const msgValue = document.getElementById('msg').value.trim();
+                    if (msgValue && isListening) {
+                      console.log('Auto-sending after', autoSendDelay, 'ms of silence');
+                      document.getElementById('stt-status').textContent = 'Auto-sending...';
+                      send();
+                      stopSpeechRecognition();
+                    }
+                  }, autoSendDelay);
+                }
+              };
+              
+              recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                let errorMsg = 'Error: ' + event.error;
+                if (event.error === 'not-allowed') {
+                  errorMsg = 'Microphone permission denied. Please allow microphone access.';
+                } else if (event.error === 'no-speech') {
+                  errorMsg = 'No speech detected. Try again.';
+                }
+                document.getElementById('stt-status').textContent = errorMsg;
+                stopSpeechRecognition();
+              };
+              
+              recognition.onend = () => {
+                // If recognition ended but we're still listening (continuous mode), restart
+                // Otherwise, if we have text, the auto-send timer should handle it
+                if (isListening) {
+                  // In continuous mode, restart recognition if it ended unexpectedly
+                  // But only if we don't have a pending auto-send
+                  if (!autoSendTimer) {
+                    const msgValue = document.getElementById('msg').value.trim();
+                    if (msgValue) {
+                      // We have text but no timer - set one now
+                      autoSendTimer = setTimeout(() => {
+                        if (document.getElementById('msg').value.trim() && isListening) {
+                          document.getElementById('stt-status').textContent = 'Auto-sending...';
+                          send();
+                          stopSpeechRecognition();
+                        }
+                      }, autoSendDelay);
+                    } else {
+                      // No text, just restart
+                      recognition.start();
+                    }
+                  }
+                }
+              };
+            } else {
+              document.getElementById('mic-btn').style.display = 'none';
+              console.warn('Speech recognition not supported in this browser');
+            }
+            
+            function toggleSpeechRecognition() {
+              if (isListening) {
+                stopSpeechRecognition();
+              } else {
+                startSpeechRecognition();
+              }
+            }
+            
+            function startSpeechRecognition() {
+              if (!recognition) {
+                alert('Speech recognition not available in this browser');
+                return;
+              }
+              finalTranscript = '';
+              document.getElementById('msg').value = '';
+              recognition.start();
+            }
+            
+            function stopSpeechRecognition() {
+              if (recognition && isListening) {
+                recognition.stop();
+              }
+              isListening = false;
+              document.getElementById('mic-btn').classList.remove('listening');
+              document.getElementById('stt-status').classList.remove('listening');
+              if (autoSendTimer) {
+                clearTimeout(autoSendTimer);
+                autoSendTimer = null;
+              }
+              if (!finalTranscript.trim()) {
+                document.getElementById('stt-status').textContent = '';
+              }
+            }
+            
             async function send() {
               const msg = document.getElementById('msg').value;
               if (!msg.trim()) return;
+              
+              // Stop speech recognition if active
+              if (isListening) {
+                stopSpeechRecognition();
+              }
+              
               try {
                 const resp = await fetch('/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message: msg})});
                 if (!resp.ok) throw new Error(resp.statusText);
                 document.getElementById('msg').value='';
+                document.getElementById('stt-status').textContent = '';
                 refresh();
               } catch (e) {
                 console.error("Chat send failed", e);
@@ -171,16 +421,10 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         raw_llm = result.get("plan", {}).get("raw_llm") or result.get("raw_llm")
         log.info("chat_response", plan=result["plan"], events=len(events))
         chat_history.append({"role": "user", "content": body.message})
-        assistant_content = ""
-        if raw_llm:
-            assistant_content = raw_llm
-        else:
-            try:
-                assistant_content = json.dumps(result["plan"])
-            except Exception:
-                assistant_content = str(result.get("plan", "")) or "Ready to help."
-        if not assistant_content.strip():
-            assistant_content = "Ready to help."
+        
+        # Build detailed response for chat
+        assistant_content = self._build_detailed_response(result, raw_llm, events)
+        
         chat_history.append({"role": "assistant", "content": assistant_content})
         log_history.extend(events)
         trace_id = result["plan"].get("trace_id") or result["execution_results"].get("trace_id") if isinstance(result["execution_results"], dict) else None
@@ -203,6 +447,17 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
     @app.get("/runs/{trace_id}")
     def get_run(trace_id: str):
         return runs.get(trace_id, {})
+    
+    @app.get("/config/stt")
+    def get_stt_config():
+        """Return STT configuration for browser."""
+        cfg = load_config(None)
+        stt_cfg = cfg.get("stt", {})
+        browser_cfg = stt_cfg.get("browser_stt", {})
+        return {
+            "enabled": browser_cfg.get("enabled", True),
+            "auto_send_delay": browser_cfg.get("auto_send_delay", 3000)
+        }
 
     return app
 
@@ -224,6 +479,8 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
     cfg = config or {}
     memory = None
     log = get_logger("service")
+    
+    # Store TTS/STT capability in memory if not already present (will be called after agent creation)
     embedding_backend = os.getenv("EMBEDDING_BACKEND", cfg.get("embedding_backend", "openai"))
     use_fake_openai = os.getenv("USE_FAKE_OPENAI", str(cfg.get("use_fake_openai", False))).lower() in ("1", "true", "yes")
     use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS", str(cfg.get("use_cpms_for_procs", False))).lower() in ("1", "true", "yes")
@@ -309,7 +566,7 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
             cpms_adapter = CPMSAdapter.from_env()
         except CPMSNotInstalled:
             cpms_adapter = None
-    return PersonalAssistantAgent(
+    agent = PersonalAssistantAgent(
         memory,
         calendar,
         tasks,
@@ -320,6 +577,8 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
         cpms=cpms_adapter,
         openai_client=openai_client,
     )
+    
+    return agent
 
 
 def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, log_level: str = "info", config_path: str | None = None):
