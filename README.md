@@ -49,8 +49,13 @@ flowchart TB
    - `poetry install`
    - For web/vision tooling: `poetry run playwright install --with-deps chromium`
 2) Environment (put these in `.env.local` — no quotes):
-   - `OPENAI_API_KEY=your-key`
-   - optional `OPENAI_CHAT_MODEL` and `OPENAI_EMBEDDING_MODEL` (defaults: `gpt-4o`, `text-embedding-3-large`)
+   - **OpenAI (Plus)**: `OPENAI_API_KEY=your-key`
+   - **Claude (Max)**: `ANTHROPIC_API_KEY=your-key`
+   - **Gemini (Ultra)**: `GOOGLE_API_KEY=your-key` or `GEMINI_API_KEY=your-key`
+   - **Provider selection**: `LLM_PROVIDER=openai|claude|gemini` (default: `openai`)
+   - Optional model overrides: `OPENAI_CHAT_MODEL`, `ANTHROPIC_CHAT_MODEL`, `GEMINI_CHAT_MODEL`
+   
+   See [LLM Provider Setup Guide](docs/llm-providers-setup.md) for detailed configuration.
 3) Optional Arango memory:
    - `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`
    - `ARANGO_VERIFY` set to a CA bundle path for cloud CAs (do **not** commit certs). Use `false` only for local dev and ccurrently bugged so just dont include it with arango cloud's cert which is
