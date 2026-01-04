@@ -423,7 +423,7 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         chat_history.append({"role": "user", "content": body.message})
         
         # Build detailed response for chat
-        assistant_content = self._build_detailed_response(result, raw_llm, events)
+        assistant_content = _build_detailed_response(result, raw_llm, events)
         
         chat_history.append({"role": "assistant", "content": assistant_content})
         log_history.extend(events)
