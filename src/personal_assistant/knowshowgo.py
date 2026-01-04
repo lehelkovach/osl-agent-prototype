@@ -192,18 +192,26 @@ class KnowShowGoAPI:
                             and not nested.get("sub_concepts")
                         )
                         
-                        # Only create nested concept if:
-                        # 1. It has a prototype_uuid (references another prototype)
-                        # 2. It's NOT atomic (has nested structure that needs recursion)
+                        # Handle nested items that reference prototypes
                         nested_proto_uuid = nested.get("prototype_uuid") or nested.get("prototype")
-                        if nested_proto_uuid and not is_atomic:
+                        if nested_proto_uuid:
                             nested_name = nested.get("name") or nested.get("title") or str(nested)
                             try:
                                 nested_embedding = embed_fn(nested_name)
-                                # Create nested concept (recursive)
-                                nested_concept_uuid = self.create_concept_recursive(
-                                    nested_proto_uuid, nested, nested_embedding, provenance, embed_fn
-                                )
+                                
+                                # For atomic items (single tool commands), still create a concept and link it
+                                # For non-atomic items, create nested concept recursively
+                                if is_atomic:
+                                    # Create a simple concept for atomic items
+                                    nested_concept_uuid = self.create_concept(
+                                        nested_proto_uuid, nested, nested_embedding, provenance
+                                    )
+                                else:
+                                    # Create nested concept recursively for non-atomic items
+                                    nested_concept_uuid = self.create_concept_recursive(
+                                        nested_proto_uuid, nested, nested_embedding, provenance, embed_fn
+                                    )
+                                
                                 # Link parent -> child
                                 rel_name = "has_child" if key == "children" else "has_step"
                                 child_edge = Edge(
@@ -447,11 +455,15 @@ class KnowShowGoAPI:
                 prototype_uuid = proto_results[0].get("uuid") if isinstance(proto_results[0], dict) else getattr(proto_results[0], "uuid", None)
         
         # Create object concept
+        # Store object_name as "name", and merge properties
+        # If properties contains "name", it will override object_name (properties take precedence for property values)
         object_json = {
-            "name": object_name,
+            "name": object_name,  # Set object_name first
             "kind": object_kind,
-            **properties
+            **properties,  # Properties may override "name" if it's in the properties dict
         }
+        # But ensure object_name is preserved (object name should take precedence over property "name")
+        object_json["name"] = object_name
         object_embedding = embedding or (embed_fn(object_name) if embed_fn else [0.0, 0.0])
         object_uuid = self.create_concept(prototype_uuid or "unknown", object_json, object_embedding, provenance)
         
