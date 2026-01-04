@@ -47,7 +47,13 @@ class PersonalAssistantAgent:
         self.procedure_builder = procedure_builder
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
-        self.openai_client: OpenAIClient = openai_client or OpenAIClient()
+        # Support both old OpenAIClient and new LLMClient interface
+        from src.personal_assistant.llm_client import LLMClient
+        if openai_client is None:
+            from src.personal_assistant.openai_client import OpenAIClient
+            self.openai_client = OpenAIClient()
+        else:
+            self.openai_client = openai_client
         self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text)
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None

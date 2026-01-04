@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.cpms_adapter import CPMSAdapter, CPMSNotInstalled
 from src.personal_assistant.openai_client import OpenAIClient, FakeOpenAIClient
+from src.personal_assistant.llm_client import create_llm_client, LLMClient
 from src.personal_assistant.local_embedder import LocalEmbedder
 from src.personal_assistant.web_tools import PlaywrightWebTools
 from src.personal_assistant.shell_executor import RealShellTools
@@ -523,26 +524,46 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
     calendar = MockCalendarTools()
     tasks = MockTaskTools()
     contacts = MockContactsTools()
-    # Use OpenAI embeddings if available; allow forcing fake client via USE_FAKE_OPENAI.
+    # Use LLM client (OpenAI or Claude) based on configuration
     use_fake = use_fake_openai
     use_local_embed = embedding_backend.lower() == "local"
     local_embedder = LocalEmbedder() if use_local_embed else None
+    
+    # Get LLM provider from config
+    llm_provider = cfg.get("llm_provider") or os.getenv("LLM_PROVIDER", "openai")
+    llm_models = cfg.get("llm_models", {})
+    
     try:
         if use_fake:
             fake_resp = os.getenv("FAKE_OPENAI_CHAT_RESPONSE", '{"intent":"inform","steps":[]}')
             openai_client = FakeOpenAIClient(chat_response=fake_resp, embedding=[0.0, 0.0, 0.0])
-        elif use_local_embed:
-            openai_client = OpenAIClient()  # keep chat via OpenAI unless also disabled
         else:
-            openai_client = OpenAIClient()
+            # Create LLM client based on provider
+            provider_config = llm_models.get(llm_provider, {})
+            openai_client = create_llm_client(
+                provider=llm_provider,
+                chat_model=provider_config.get("chat"),
+                embedding_model=provider_config.get("embedding"),
+            )
+            log.info("llm_provider_initialized", provider=llm_provider, chat_model=provider_config.get("chat"))
+        
         def _embed(text: str):
             try:
                 if local_embedder:
                     return local_embedder.embed(text)
+                # For Claude, embeddings aren't available, fall back to OpenAI or local
+                if llm_provider == "claude" and not local_embedder:
+                    # Try OpenAI embeddings as fallback
+                    try:
+                        fallback_client = create_llm_client(provider="openai")
+                        return fallback_client.embed(text)
+                    except:
+                        return None
                 return openai_client.embed(text)
             except Exception:
                 return None
-    except Exception:
+    except Exception as e:
+        log.error("llm_client_init_failed", error=str(e), provider=llm_provider)
         openai_client = None
         _embed = lambda text: None
 

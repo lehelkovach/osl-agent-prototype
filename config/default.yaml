@@ -6,8 +6,30 @@ embedding_backend: "openai"  # options: openai | local
 # local embedding model (sentence-transformers); empty means default model
 local_embed_model: ""
 use_fake_openai: false
+# LLM Provider: "openai", "claude", or "gemini"
+llm_provider: "openai"  # options: openai | claude | gemini
+# Provider-specific model names (overrides env vars)
+llm_models:
+  openai:
+    chat: "gpt-4o"  # or gpt-4-turbo, gpt-4
+    embedding: "text-embedding-3-large"
+  claude:
+    chat: "claude-3-5-sonnet-20241022"  # or claude-3-opus-20240229, claude-3-5-haiku-20241022
+    embedding: null  # Claude doesn't provide embeddings
+  gemini:
+    chat: "gemini-1.5-pro"  # or gemini-1.5-ultra
+    embedding: "models/embedding-001"
 use_cpms_for_procs: false
 use_playwright: false
+# LLM Provider configuration
+llm:
+  provider: "openai"  # options: openai | claude (auto-detects from API keys if not set)
+  # OpenAI settings
+  openai_chat_model: "gpt-4o"  # or gpt-4-turbo, gpt-4, etc.
+  openai_embedding_model: "text-embedding-3-large"
+  # Claude settings
+  claude_chat_model: "claude-3-5-sonnet-20241022"  # or claude-3-opus-20240229, claude-3-5-haiku-20241022
+  # For Claude Max, use: claude-3-opus-20240229 (or latest opus model)
 arango:
   url: ""
   db: "agent_memory"
