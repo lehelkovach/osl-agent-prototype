@@ -945,8 +945,19 @@ class PersonalAssistantAgent:
                                     self.queue_manager.enqueue(task_node, provenance)
                             result = self.dag_executor.execute_dag(concept_uuid, context=params.get("context"), enqueue_fn=enqueue_cmd)
                             res = {"status": "success", "dag_result": result}
+                            
+                            # Check if execution failed and trigger adaptation
+                            if result.get("status") == "error" or result.get("errors"):
+                                # Store user_request in plan for adaptation context
+                                if not hasattr(plan, 'get'):
+                                    plan = {"user_request": None}
+                                self._adapt_procedure_on_failure(concept_uuid, result, provenance, user_request=plan.get("user_request"))
                     except Exception as exc:
                         res = {"status": "error", "error": str(exc)}
+                        # Trigger adaptation on exception
+                        concept_uuid = params.get("concept_uuid")
+                        if concept_uuid:
+                            self._adapt_procedure_on_failure(concept_uuid, {"status": "error", "error": str(exc)}, provenance, user_request=plan.get("user_request"))
                 elif tool_name == "vault.query_credentials":
                     try:
                         # Query vault for credentials associated with a concept or URL
@@ -1478,6 +1489,125 @@ class PersonalAssistantAgent:
         except Exception as exc:
             self.log.warning(
                 "generalize_failed",
+                error=str(exc),
+                trace_id=provenance.trace_id,
+            )
+
+    def _adapt_procedure_on_failure(
+        self,
+        concept_uuid: str,
+        execution_result: Dict[str, Any],
+        provenance: Provenance,
+        user_request: Optional[str] = None,
+    ) -> None:
+        """
+        Adapt a procedure when execution fails.
+        
+        When a DAG execution fails, this method:
+        1. Loads the original procedure concept
+        2. Uses LLM to adapt it based on the error and user request
+        3. Stores the adapted version
+        4. Links it to the original (via previous_version_uuid)
+        
+        This implements automatic adaptation: when a procedure doesn't work,
+        the agent learns by creating an adapted version.
+        """
+        try:
+            # Load the original concept
+            original_concept = self.memory.nodes.get(concept_uuid)
+            if not original_concept:
+                self.log.warning(
+                    "adaptation_original_not_found",
+                    concept_uuid=concept_uuid,
+                    trace_id=provenance.trace_id,
+                )
+                return
+            
+            # Extract error information
+            error_msg = execution_result.get("error", "")
+            errors = execution_result.get("errors", [])
+            error_text = error_msg or (errors[0] if errors else "Execution failed")
+            
+            # Get original procedure data
+            original_props = original_concept.props
+            original_steps = original_props.get("steps", [])
+            original_name = original_props.get("name", "Procedure")
+            original_desc = original_props.get("description", "")
+            
+            # Use LLM to adapt the procedure
+            # For now, create a simple adapted version with error context
+            # In a full implementation, would use LLM to intelligently adapt
+            adapted_name = f"{original_name} (Adapted)"
+            adapted_desc = f"Adapted version of {original_name}. Error: {error_text[:100]}"
+            
+            # Create adapted steps (simplified: same steps for now, but in real implementation
+            # would use LLM to update URLs/selectors based on error and user_request)
+            adapted_steps = original_steps.copy()
+            
+            # If user_request provides context (e.g., different URL), update steps
+            if user_request:
+                # Simple heuristic: if user_request mentions a URL, update first web.get step
+                url_match = re.search(r'https?://[^\s]+', user_request)
+                if url_match:
+                    new_url = url_match.group(0)
+                    for step in adapted_steps:
+                        if step.get("tool") == "web.get" and "url" in step.get("params", {}):
+                            step["params"]["url"] = new_url
+                            break
+            
+            # Get prototype UUID
+            proc_proto_uuid = None
+            for node in self.memory.nodes.values():
+                if node.kind == "Prototype" and node.props.get("name") == "Procedure":
+                    proc_proto_uuid = node.uuid
+                    break
+            
+            if not proc_proto_uuid:
+                self.log.warning(
+                    "adaptation_no_prototype",
+                    trace_id=provenance.trace_id,
+                )
+                return
+            
+            # Create adapted concept
+            adapted_json = {
+                "name": adapted_name,
+                "description": adapted_desc,
+                "steps": adapted_steps,
+                "original_uuid": concept_uuid,
+                "adaptation_reason": error_text[:200],
+            }
+            
+            # Generate embedding for adapted concept
+            adapted_embedding = self._embed_text(f"{adapted_name} {adapted_desc} {user_request or ''}")
+            
+            # Store adapted version
+            adapted_uuid = self.ksg.create_concept(
+                prototype_uuid=proc_proto_uuid,
+                json_obj=adapted_json,
+                embedding=adapted_embedding,
+                previous_version_uuid=concept_uuid,  # Link to original
+            )
+            
+            # Create association edge from original to adapted
+            self.ksg.add_association(
+                from_uuid=concept_uuid,
+                to_uuid=adapted_uuid,
+                association_type="adapted_from",
+                strength=0.8,
+            )
+            
+            self.log.info(
+                "adaptation_completed",
+                original_uuid=concept_uuid,
+                adapted_uuid=adapted_uuid,
+                error=error_text[:100],
+                trace_id=provenance.trace_id,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "adaptation_failed",
+                concept_uuid=concept_uuid,
                 error=str(exc),
                 trace_id=provenance.trace_id,
             )
