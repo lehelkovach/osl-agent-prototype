@@ -3,11 +3,15 @@
 ## Core Philosophy
 
 KnowShowGo implements a **prototype-based OOP model** (JavaScript-style) where:
+- **Prototypes** = Schemas/templates (type definitions, immutable, versioned)
+- **Concepts** = Instances (actual data nodes following prototype schemas)
 - **Concepts** are "neural/fuzzy" - have embeddings for similarity matching
-- **Objects/Prototypes** are "symbolic" - matched using CPMS for exact/semantic patterns
+- **Prototypes** are "symbolic" - schemas that define structure
 - All prototypes derive from a root **ObjectPrototype**
 - Prototypes are **immutable but versioned**
 - Data flows as JSON objects (no hard typing, matching CPMS JavaScript approach)
+
+**Key Principle**: Prototypes are the schemas/templates. Concepts are the actual instances/data nodes added to KnowShowGo.
 
 ## Ontology Structure
 
