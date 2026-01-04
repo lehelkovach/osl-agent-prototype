@@ -1,10 +1,50 @@
 # Session Notes (persistent context)
 
 ## Current goals
+- **Primary**: Get working prototype where agent can learn procedures from chat messages, store them in KnowShowGo semantic memory, recall them via fuzzy matching, execute them, and adapt them when they fail. Focus: Learn → Recall → Execute → Adapt cycle.
+
+## Learning Loop Progress (Core Learning Loop Plan)
+
+### ✅ Module 1: Learn (COMPLETE)
+- Agent learns procedures from chat and stores in KnowShowGo
+- Tests: `tests/test_agent_learn_procedure.py` (all passing)
+- Status: All implementation tasks complete
+
+### ✅ Module 2: Recall (COMPLETE)
+- Agent recalls stored procedures via fuzzy matching (vector embeddings)
+- Tests: `tests/test_agent_recall_procedure.py` (all passing)
+- Status: All implementation tasks complete
+
+### ✅ Module 3: Execute (COMPLETE)
+- Agent executes recalled procedures (DAG execution)
+- Tests: `tests/test_agent_execute_recalled_procedure.py` (all passing)
+- Status: DAG execution working, enqueue_fn signature fixed, all tests passing
+
+### ✅ Module 4: Adapt (COMPLETE)
+- Agent adapts procedures when execution fails
+- Tests: `tests/test_agent_adapt_procedure.py` (all passing)
+- Status: Adaptation logic implemented, stores adapted versions with links to originals
+
+### ✅ Module 5: Auto-Generalize (COMPLETE)
+- Agent auto-generalizes when multiple procedures work (via vector embeddings)
+- Tests: `tests/test_agent_auto_generalize.py`
+- Status: Implementation complete, uses vector embedding averaging
 - Standardize the memory adapter boundary (`MemoryTools`) so backends (Arango, Chroma, in-memory) are swappable and contract-tested.
 - Keep procedure planning JSON-first: LLM returns `{"commandtype": ..., "metadata": {...}}` with procedure steps; execute and persist run stats + links.
 
 ## Recent changes
+- **Module 3 (Execute) Complete**: Added DAG execution tests, fixed enqueue_fn signature issue, verified end-to-end execution. Agent can now execute recalled procedures via DAG structures.
+- **Module 4 (Adapt) Complete**: Implemented `_adapt_procedure_on_failure()` method that detects execution failures, adapts procedures based on errors and user requests, stores adapted versions, and links them to originals. All tests passing.
+- **Phase 3 (Full Cycle Validation) Complete**: Created comprehensive end-to-end tests (`tests/test_agent_full_learning_cycle.py`) validating the complete learning cycle: Learn → Recall → Execute → Adapt → Generalize. All tests passing.
+- **Core Learning Loop Complete**: All 5 modules of the core learning loop are now functionally complete. The agent can learn procedures, recall them via fuzzy matching, execute them via DAG, adapt them on failure, and auto-generalize working procedures.
+- **KnowShowGo Integration**: Enhanced KnowShowGo API with recursive concept creation, embedding-based search, CPMS pattern storage, and concept generalization. Agent now queries KnowShowGo concepts before asking user, supports nested DAG structures (procedures containing sub-procedures), and can merge exemplars into generalized patterns with taxonomy hierarchies.
+- **DAG Execution Engine**: Added `dag_executor.py` to load and execute DAG structures from concepts. Evaluates bottom nodes, checks guards/rules, and enqueues tool commands. Supports nested DAG execution.
+- **CPMS Form Detection**: Added basic CPMS form detection with fallback. Integration points defined for full CPMS API integration (see `docs/cpms-integration-plan.md`).
+- **Vault Credential Lookup**: Added `vault.query_credentials` tool to query credentials/identity associated with concepts or URLs.
+- **LLM Prompts Updated**: Added instructions for recursive concept creation, embedding-based memory queries, CPMS integration, and concept generalization.
+- Name recall formats responses from Name/Person nodes even without a query string, parsing names from note/value fields to return `Your name is ...`.
+- Procedure reuse now avoids auto-executing single-step procedures, returning a `procedure.search` step instead; multi-step procedures still hydrate and run, and step hydration infers params directly from payloads. Plan persistence now runs regardless of reuse.
+- Empty/low-confidence inform plans ask the user with a friendly instructions prompt so downstream tests treat them as `ask_user`.
 - Added `queue.enqueue` tool with optional `not_before`/`delay_seconds` and prompt/docs updates; queue items now store not_before and sort by priority/time. Agent handles enqueue tool and emits queue updates.
 - Agent prompt + parsing now expect strict JSON plans; added fallback parsing for legacy `{intent, steps}`.
 - Procedure runs are persisted with tested/success/failure counters and linked via `run_of` edges; added test `tests/test_agent_procedure_run_stats.py`.
@@ -43,6 +83,7 @@
 - Consider beefing up NetworkX/Mock backends to mirror DB edge queries if needed.
 - Adjust memory recall heuristics so inform queries prefer the most relevant Concept/note over Person/Name nodes.
 - Decide on dual-write/strength-weighting later; defer until core abstraction is stable.
+- **CPMS Integration**: See `docs/cpms-integration-plan.md` for detailed CPMS development tasks. Core agent/KnowShowGo integration is complete; CPMS-specific work (pattern matching API, observation building, signal extraction) can proceed in parallel.
 
 ## Environment / flags
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
@@ -59,6 +100,7 @@
 - Latest: `pytest tests/test_cpms_routing_toggle.py -q` (passing).
 - Latest: `pytest tests/test_agent_plan_fallback_on_error.py tests/test_agent_ask_user_on_empty_plan.py -q` (passing).
 - Latest: `pytest tests/test_agent_procedure_selector_update.py tests/test_agent_ask_user_on_execution_error.py -q` (passing).
+- Latest: `pytest -q` (all tests; 129 passed, 6 skipped).
 
 ## Guidance
 - See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).
