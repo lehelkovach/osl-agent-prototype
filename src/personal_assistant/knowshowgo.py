@@ -193,25 +193,19 @@ class KnowShowGoAPI:
                         )
                         
                         # Handle nested items that reference prototypes
+                        # Behavior differs by key:
+                        # - "children": Create concepts even if atomic (has tool)
+                        # - "steps": Only create concepts if non-atomic (has nested structure)
                         nested_proto_uuid = nested.get("prototype_uuid") or nested.get("prototype")
-                        if nested_proto_uuid:
+                        should_create_concept = nested_proto_uuid and (key == "children" or not is_atomic)
+                        if should_create_concept:
                             nested_name = nested.get("name") or nested.get("title") or str(nested)
                             try:
                                 nested_embedding = embed_fn(nested_name)
-                                
-                                # For atomic items (single tool commands), still create a concept and link it
-                                # For non-atomic items, create nested concept recursively
-                                if is_atomic:
-                                    # Create a simple concept for atomic items
-                                    nested_concept_uuid = self.create_concept(
-                                        nested_proto_uuid, nested, nested_embedding, provenance
-                                    )
-                                else:
-                                    # Create nested concept recursively for non-atomic items
-                                    nested_concept_uuid = self.create_concept_recursive(
-                                        nested_proto_uuid, nested, nested_embedding, provenance, embed_fn
-                                    )
-                                
+                                # Create nested concept recursively
+                                nested_concept_uuid = self.create_concept_recursive(
+                                    nested_proto_uuid, nested, nested_embedding, provenance, embed_fn
+                                )
                                 # Link parent -> child
                                 rel_name = "has_child" if key == "children" else "has_step"
                                 child_edge = Edge(
