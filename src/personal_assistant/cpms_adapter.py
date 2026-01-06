@@ -96,12 +96,10 @@ class CPMSAdapter:
             Dict with form_type, fields (list of field dicts), confidence, and optional pattern_id
         """
         # Try CPMS API first if available
-        # Note: Published cpms-client (v0.1.1) doesn't have detect_form() method.
-        # match_pattern() requires pattern and concepts, which we don't have here.
-        # So we fall back to simple detection for now.
+        # cpms-client v0.1.2+ includes detect_form() method
         if hasattr(self.client, "detect_form"):
             try:
-                # Use high-level detect_form endpoint (if available in future versions)
+                # Use high-level detect_form endpoint from cpms-client v0.1.2+
                 result = self.client.detect_form(
                     html=html,
                     screenshot_path=screenshot_path,
@@ -117,7 +115,7 @@ class CPMSAdapter:
                 logging.warning(f"CPMS detect_form API call failed, using fallback: {e}")
         
         # Fallback: simple pattern detection
-        # Published cpms-client doesn't have detect_form() or a suitable match_pattern() for this use case
+        # Used when CPMS service unavailable or detect_form() not supported
         return self._simple_form_detection(html)
     
     def _build_observation(

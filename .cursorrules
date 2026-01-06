@@ -1,0 +1,45 @@
+# Cursor Rules for osl-agent-prototype
+
+## Project Context
+This is the OSL Agent Prototype - a personal assistant agent with a core learning loop (Learn → Recall → Execute → Adapt → Auto-Generalize).
+
+## Essential Documentation
+Before making changes, read:
+1. `docs/AGENT-HANDOFF.md` - Comprehensive project context, current state, and development stages
+2. `docs/core-learning-loop-plan.md` - Core learning cycle implementation details
+3. `docs/development-priorities-summary.md` - Current priorities and phases
+4. `README.md` - Project overview and setup
+
+## Current Priority
+**Phase 2: CPMS Integration** - Complete integration of cpms-client v0.1.2 with detect_form() method.
+
+## Development Approach
+- Follow TDD (Test-Driven Development) - write tests first
+- Use existing code patterns and architecture
+- Maintain backward compatibility where possible
+- Update documentation as you make changes
+
+## Key Technical Concepts
+- **KnowShowGo (KSG)**: Fuzzy ontology knowledge graph with embeddings
+- **DAG Execution**: Dependency-based procedure execution
+- **CPMS**: Concept Pattern Matching System for form detection
+- **Multi-Provider LLM**: OpenAI, Claude, Gemini support via llm_client.py abstraction
+
+## Important Notes
+- TTS/STT functionality was removed (not part of this project)
+- cpms-client is at v0.1.2 (just updated)
+- Core learning loop modules are complete (Learn, Recall, Execute, Adapt, Auto-Generalize)
+- Use `.env.local` for environment variables (not committed to git)
+
+## Testing
+- Run tests: `poetry run pytest`
+- 90+ tests should pass
+- Use mock tools for unit tests
+- Integration tests gated by env flags (TEST_ARANGO, TEST_CHROMA, etc.)
+
+## When Starting Work
+1. Read `docs/AGENT-HANDOFF.md` for full context
+2. Check `docs/session-notes.md` for recent changes
+3. Review relevant test files for usage examples
+4. Follow existing code patterns
+
