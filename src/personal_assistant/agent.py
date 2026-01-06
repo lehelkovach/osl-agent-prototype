@@ -933,6 +933,7 @@ class PersonalAssistantAgent:
                             
                             # Reuse-first: if we already have a stored CPMS pattern that matches this
                             # page strongly, return it immediately and avoid a CPMS call.
+                            did_reuse = False
                             if self.use_cpms_for_forms and self.ksg and url and html:
                                 try:
                                     best = self.ksg.find_best_cpms_pattern(
@@ -963,27 +964,22 @@ class PersonalAssistantAgent:
                                                 )
                                             except Exception:
                                                 pass
-                                        # Short-circuit: do not call CPMS.
-                                        return {
-                                            "status": "success",
-                                            "tool": tool_name,
-                                            "params": params,
-                                            "result": res,
-                                        }
+                                        did_reuse = True
                                 except Exception:
                                     # Ignore reuse errors; fall back to CPMS.
                                     pass
 
-                            pattern_data = self.cpms.detect_form_pattern(
-                                html=html,
-                                screenshot_path=screenshot_path,
-                                url=url,
-                                dom_snapshot=dom_snapshot
-                            )
-                            res = {"status": "success", "pattern": pattern_data}
+                            if not did_reuse:
+                                pattern_data = self.cpms.detect_form_pattern(
+                                    html=html,
+                                    screenshot_path=screenshot_path,
+                                    url=url,
+                                    dom_snapshot=dom_snapshot
+                                )
+                                res = {"status": "success", "pattern": pattern_data}
 
-                            # Optional: store pattern into KnowShowGo for future reuse.
-                            if self.use_cpms_for_forms and self.ksg and pattern_data:
+                            # Optional: store pattern into KnowShowGo for future reuse (only when we detected anew).
+                            if not did_reuse and self.use_cpms_for_forms and self.ksg and pattern_data:
                                 try:
                                     # Attach deterministic fingerprint for later matching.
                                     if isinstance(pattern_data, dict) and url and html and "fingerprint" not in pattern_data:
