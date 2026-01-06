@@ -1153,22 +1153,144 @@ class PersonalAssistantAgent:
     def _autofill_form(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Autofill a form using stored FormData/Identity/Credential/PaymentMethod concepts.
-        params: {"url": str, "selectors": {field: selector}, "required_fields": [field], "query": optional str}
+        params:
+          - url: str
+          - selectors: optional {field: selector} (direct fill)
+          - required_fields: optional [field]
+          - query: optional str (memory query)
+          - form_type: optional str (login/billing/etc.)
+          - reuse_min_score: optional float (for pattern reuse)
         """
         if not self.web:
             return {"status": "error", "error": "WebTools not configured"}
-        selectors = params.get("selectors", {})
-        required_fields = params.get("required_fields") or list(selectors.keys())
+        url = params.get("url") or ""
+        if not url:
+            return {"status": "error", "error": "url required"}
+
+        # If selectors were explicitly provided, keep the legacy behavior:
+        # fill exactly those selectors using values from memory.
+        selectors = params.get("selectors") or {}
+        if selectors:
+            required_fields = params.get("required_fields") or list(selectors.keys())
+            query = params.get("query", "form data")
+            fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
+            filled = []
+            for field, selector in selectors.items():
+                val = fill_map.get(field)
+                if val is None:
+                    continue
+                res = self.web.fill(url=url, selector=selector, text=str(val))
+                filled.append({"field": field, "value": val, "selector": selector, "result": res})
+            return {"status": "success", "filled": filled}
+
+        # Otherwise, derive selectors from stored patterns (reuse-first) or CPMS detection.
+        dom = self.web.get_dom(url)
+        html = dom.get("html") or dom.get("body") or ""
+        screenshot_path = dom.get("screenshot_path")
+
+        form_type = params.get("form_type")
+        reuse_min_score = float(params.get("reuse_min_score") or os.getenv("KSG_PATTERN_REUSE_MIN_SCORE", "2.0"))
+
+        reused = False
+        pattern_uuid = None
+        pattern_data: Optional[Dict[str, Any]] = None
+
+        # Reuse-first: consult KSG before calling CPMS.
+        if self.use_cpms_for_forms and self.ksg and html:
+            try:
+                best = self.ksg.find_best_cpms_pattern(url=url, html=html, form_type=form_type, top_k=1)
+                if best and best[0].get("score", 0.0) >= reuse_min_score:
+                    concept = best[0].get("concept") or {}
+                    pdata = best[0].get("pattern_data") or {}
+                    if isinstance(pdata, dict):
+                        pattern_data = pdata
+                        pattern_uuid = concept.get("uuid")
+                        reused = True
+            except Exception:
+                pass
+
+        if not pattern_data:
+            if not self.cpms:
+                return {"status": "error", "error": "No stored pattern match and CPMS adapter not configured"}
+            pattern_data = self.cpms.detect_form_pattern(html=html, screenshot_path=screenshot_path, url=url, dom_snapshot=None)
+            reused = False
+
+            # Store exemplar for future reuse.
+            if self.use_cpms_for_forms and self.ksg and isinstance(pattern_data, dict):
+                try:
+                    if "fingerprint" not in pattern_data and html:
+                        pattern_data["fingerprint"] = compute_form_fingerprint(url=url, html=html).to_dict()
+                    safe_name = params.get("pattern_name") or f"{url}:{pattern_data.get('form_type', form_type or 'unknown')}"
+                    emb = self._embed_text(safe_name) or [0.0, 0.0]
+                    pattern_uuid = self.ksg.store_cpms_pattern(
+                        pattern_name=safe_name,
+                        pattern_data=pattern_data,
+                        embedding=emb,
+                        concept_uuid=params.get("concept_uuid"),
+                    )
+                except Exception:
+                    pass
+
+        # Build selector map from the pattern.
+        selector_map: Dict[str, str] = {}
+        fields = pattern_data.get("fields") if isinstance(pattern_data, dict) else None
+        if isinstance(fields, list):
+            for f in fields:
+                if not isinstance(f, dict):
+                    continue
+                ftype = (f.get("type") or "unknown").strip()
+                if ftype in ("submit", "button", "unknown"):
+                    continue
+                sel = f.get("selector") or ""
+                if sel:
+                    selector_map[ftype] = sel
+
+        required_fields = params.get("required_fields") or list(selector_map.keys())
         query = params.get("query", "form data")
-        fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
-        filled = []
-        for field, selector in selectors.items():
-            val = fill_map.get(field)
-            if val is None:
+
+        # Gather values from memory with minimal synonym support.
+        synonym_keys = {
+            "email": ["email", "username"],
+            "username": ["username", "email"],
+            "password": ["password"],
+        }
+
+        nodes = self.form_retriever.fetch_latest(query=query, top_k=20)
+        values_by_key: Dict[str, Any] = {}
+        for node in nodes:
+            props = node.get("props", {}) if isinstance(node, dict) else {}
+            if not isinstance(props, dict):
                 continue
-            res = self.web.fill(url=params.get("url", "about:blank"), selector=selector, text=str(val))
+            for k, v in props.items():
+                if v is not None and k not in values_by_key:
+                    values_by_key[k] = v
+
+        filled: List[Dict[str, Any]] = []
+        missing: List[str] = []
+        for field in required_fields:
+            selector = selector_map.get(field) or selectors.get(field)
+            if not selector:
+                missing.append(field)
+                continue
+            candidates = synonym_keys.get(field, [field])
+            val = None
+            for k in candidates:
+                if k in values_by_key:
+                    val = values_by_key[k]
+                    break
+            if val is None:
+                missing.append(field)
+                continue
+            res = self.web.fill(url=url, selector=selector, text=str(val))
             filled.append({"field": field, "value": val, "selector": selector, "result": res})
-        return {"status": "success", "filled": filled}
+
+        return {
+            "status": "success",
+            "filled": filled,
+            "missing_fields": sorted(set(missing)),
+            "pattern_uuid": pattern_uuid,
+            "reused": reused,
+        }
 
     def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
         """
