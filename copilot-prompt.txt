@@ -1,5 +1,19 @@
 ## Codex session primer
 
+- **Bootstrap (fresh Ubuntu/Debian machine)**:
+  - Ensure Python 3.12+ is available: `python3 --version`
+  - Install venv support (required for `pipx` / Poetry):
+    - `sudo apt-get update && sudo apt-get install -y python3.12-venv`
+    - (If you’re not on 3.12 specifically, `sudo apt-get install -y python3-venv` is usually sufficient.)
+  - Install Poetry (recommended) via pipx:
+    - `python3 -m pip install --user pipx`
+    - `~/.local/bin/pipx install poetry`
+    - Ensure it’s on PATH: `export PATH="$HOME/.local/bin:$PATH"`
+  - Install repo deps and Playwright browsers:
+    - `poetry install`
+    - `poetry run playwright install --with-deps chromium` (needed for Playwright-backed tests/tools)
+  - Run tests: `poetry run pytest`
+
 - **First**: Read `docs/AGENT-HANDOFF.md` for comprehensive project context, current state, and development stages (especially if starting fresh or on a new machine).
 - Always read `docs/session-notes.md` at start to recall goals, recent changes, outstanding TODOs, env flags, and last test run.
 - Update `docs/session-notes.md` as you make meaningful progress: add recent changes, adjust TODOs/goals/testing status. Keep it concise and current so future sessions can rehydrate quickly.

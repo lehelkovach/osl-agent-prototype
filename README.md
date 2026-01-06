@@ -45,9 +45,21 @@ flowchart TB
 - `main.py`: Demo entrypoint that prefers Arango, then Chroma, then in-memory mock.
 
 ## Setup (Poetry)
+0) Prereqs: Python + venv support + Poetry (recommended)
+   - **Python**: this repo targets Python 3.12+ (`python3 --version`)
+   - **Ubuntu/Debian venv requirement** (needed for `pipx`/Poetry to work):
+     - `sudo apt-get update && sudo apt-get install -y python3.12-venv`
+     - (If you’re not on 3.12 specifically, `sudo apt-get install -y python3-venv` is usually sufficient.)
+   - **Install Poetry via pipx** (recommended):
+     - `python3 -m pip install --user pipx`
+     - `~/.local/bin/pipx install poetry`
+     - Ensure it’s on PATH: `export PATH="$HOME/.local/bin:$PATH"`
+     - Verify: `poetry --version`
+
 1) Install dependencies with Poetry:
    - `poetry install`
-   - For web/vision tooling: `poetry run playwright install --with-deps chromium`
+   - **Playwright browsers (required for Playwright-backed tests and web tools)**:
+     - `poetry run playwright install --with-deps chromium`
 2) Environment (put these in `.env.local` — no quotes):
    - **OpenAI (Plus)**: `OPENAI_API_KEY=your-key`
    - **Claude (Max)**: `ANTHROPIC_API_KEY=your-key`
