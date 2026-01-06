@@ -10,6 +10,7 @@ from src.personal_assistant.mock_tools import (
     MockContactsTools,
 )
 from src.personal_assistant.openai_client import FakeOpenAIClient
+from src.personal_assistant.models import Node, Provenance
 
 
 class FakeCpmsClient:

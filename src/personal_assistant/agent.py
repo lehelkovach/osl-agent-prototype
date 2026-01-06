@@ -17,6 +17,7 @@ from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.knowshowgo import KnowShowGoAPI
 from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
+from src.personal_assistant.form_fingerprint import compute_form_fingerprint
 from src.personal_assistant.logging_setup import get_logger
 
 class PersonalAssistantAgent:
@@ -939,6 +940,9 @@ class PersonalAssistantAgent:
                             # Optional: store pattern into KnowShowGo for future reuse.
                             if self.use_cpms_for_forms and self.ksg and pattern_data:
                                 try:
+                                    # Attach deterministic fingerprint for later matching.
+                                    if isinstance(pattern_data, dict) and url and html and "fingerprint" not in pattern_data:
+                                        pattern_data["fingerprint"] = compute_form_fingerprint(url=url, html=html).to_dict()
                                     form_type = pattern_data.get("form_type") if isinstance(pattern_data, dict) else None
                                     safe_name = pattern_name or f"{url or 'unknown'}:{form_type or 'unknown'}"
                                     emb = self._embed_text(safe_name) or [0.0, 0.0]
