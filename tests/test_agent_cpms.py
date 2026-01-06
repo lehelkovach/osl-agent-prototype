@@ -101,6 +101,76 @@ class TestAgentCPMS(unittest.TestCase):
         procedures_step = next(s for s in step_results if "procedures" in s)
         self.assertEqual(len(procedures_step["procedures"]), 1)
 
+    def test_cpms_detect_form_can_store_pattern_into_ksg_when_enabled(self):
+        """
+        If USE_CPMS_FOR_FORMS is enabled, cpms.detect_form should store the detected
+        pattern in KnowShowGo and (optionally) link it to a parent concept.
+        """
+        memory = MockMemoryTools()
+        cpms_client = FakeCpmsClient()
+
+        # Provide detect_form() on the fake CPMS client.
+        def _detect_form(html, screenshot_path=None, screenshot=None, url=None, dom_snapshot=None, observation=None):
+            return {
+                "form_type": "login",
+                "fields": [{"type": "email", "selector": "input[type='email']", "confidence": 0.9}],
+                "confidence": 0.85,
+                "pattern_id": "p-1",
+            }
+
+        cpms_client.detect_form = _detect_form  # type: ignore[attr-defined]
+        cpms_adapter = CPMSAdapter(cpms_client)
+
+        # Create a parent concept to link patterns to.
+        prov = Provenance(source="user", ts="2026-01-01T00:00:00Z", confidence=1.0, trace_id="t")
+        parent = Node(kind="Concept", labels=["Test"], props={"name": "ExampleSite"})
+        memory.upsert(parent, prov, embedding_request=False)
+
+        plan = """
+        {
+          "intent": "task",
+          "steps": [
+            {
+              "tool": "cpms.detect_form",
+              "params": {
+                "html": "<form><input type=\\"email\\"></form>",
+                "url": "https://example.com/login",
+                "concept_uuid": "%s",
+                "pattern_name": "example.com:login"
+              }
+            }
+          ]
+        }
+        """ % parent.uuid
+
+        agent = PersonalAssistantAgent(
+            memory,
+            MockCalendarTools(),
+            MockTaskTools(),
+            web=MockWebTools(),
+            contacts=MockContactsTools(),
+            cpms=cpms_adapter,
+            use_cpms_for_forms=True,
+            openai_client=FakeOpenAIClient(chat_response=plan, embedding=[0.1, 0.1, 0.1]),
+        )
+
+        result = agent.execute_request("detect a form and store it")
+        self.assertEqual(result["execution_results"]["status"], "completed")
+
+        # Ensure at least one stored Pattern concept exists.
+        pattern_nodes = [
+            n for n in memory.nodes.values()
+            if n.kind == "Concept" and n.props.get("source") == "cpms" and "pattern_data" in n.props
+        ]
+        self.assertTrue(pattern_nodes, "Expected a stored CPMS Pattern concept")
+
+        # Ensure a has_pattern edge exists from the parent concept to the stored pattern.
+        has_pattern_edges = [
+            e for e in memory.edges.values()
+            if e.rel == "has_pattern" and e.from_node == parent.uuid
+        ]
+        self.assertTrue(has_pattern_edges, "Expected parent -> pattern has_pattern edge")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -35,6 +35,7 @@ class PersonalAssistantAgent:
         openai_client: Optional[OpenAIClient] = None,
         event_bus: Optional[EventBus] = None,
         use_cpms_for_procs: Optional[bool] = None,
+        use_cpms_for_forms: Optional[bool] = None,
         ksg: Optional[KnowShowGoAPI] = None,
     ):
         self.memory = memory
@@ -66,6 +67,12 @@ class PersonalAssistantAgent:
             self.use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS") == "1"
         else:
             self.use_cpms_for_procs = use_cpms_for_procs
+
+        # Flag to store CPMS-detected form patterns into KnowShowGo
+        if use_cpms_for_forms is None:
+            self.use_cpms_for_forms = os.getenv("USE_CPMS_FOR_FORMS") == "1"
+        else:
+            self.use_cpms_for_forms = use_cpms_for_forms
         # Flag to enable ask-user fallback on empty plans (default off to preserve legacy flows)
         self.ask_user_enabled = os.getenv("ASK_USER_FALLBACK") == "1"
 
@@ -918,6 +925,8 @@ class PersonalAssistantAgent:
                             screenshot_path = params.get("screenshot_path") or params.get("screenshot")
                             url = params.get("url")
                             dom_snapshot = params.get("dom_snapshot")
+                            concept_uuid = params.get("concept_uuid")
+                            pattern_name = params.get("pattern_name")
                             
                             pattern_data = self.cpms.detect_form_pattern(
                                 html=html,
@@ -926,6 +935,23 @@ class PersonalAssistantAgent:
                                 dom_snapshot=dom_snapshot
                             )
                             res = {"status": "success", "pattern": pattern_data}
+
+                            # Optional: store pattern into KnowShowGo for future reuse.
+                            if self.use_cpms_for_forms and self.ksg and pattern_data:
+                                try:
+                                    form_type = pattern_data.get("form_type") if isinstance(pattern_data, dict) else None
+                                    safe_name = pattern_name or f"{url or 'unknown'}:{form_type or 'unknown'}"
+                                    emb = self._embed_text(safe_name) or [0.0, 0.0]
+                                    pattern_uuid = self.ksg.store_cpms_pattern(
+                                        pattern_name=safe_name,
+                                        pattern_data=pattern_data if isinstance(pattern_data, dict) else {"pattern": pattern_data},
+                                        embedding=emb,
+                                        concept_uuid=concept_uuid,
+                                    )
+                                    res["pattern_uuid"] = pattern_uuid
+                                except Exception:
+                                    # Don't fail tool execution if storage fails.
+                                    pass
                         except Exception as exc:
                             res = {"status": "error", "error": str(exc)}
                 elif tool_name == "dag.execute":
