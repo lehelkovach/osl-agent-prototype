@@ -63,10 +63,26 @@ Goal: merge exemplars into generalized patterns once enough successful runs exis
 ### Live testing / debug loop (daemon-style)
 Use this sequence when you have real env vars set (OpenAI/Arango/Playwright):
 
+#### Preconditions (live)
+- **Real OpenAI**:
+  - `USE_FAKE_OPENAI=0`
+  - `OPENAI_API_KEY` set (real)
+- **Live Arango cloud**:
+  - `ARANGO_URL`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD` set (real)
+- **Real Playwright**:
+  - `USE_PLAYWRIGHT=1`
+  - `poetry run playwright install --with-deps chromium`
+
 1) Run the service locally:
    - `poetry run agent-service`
 2) Send a request:
    - `curl -sS http://localhost:8000/chat -H 'content-type: application/json' -d '{"message":"Log into example.com"}'`
 3) Inspect logs:
    - `log_dump.txt` (clear between runs to isolate)
+
+#### Live test commands
+- Playwright (real, fixture-based):
+  - `poetry run pytest -q tests/test_web_playwright_actions.py`
+- OpenAI + Arango connectivity (live):
+  - `poetry run pytest -q tests/test_openai_live.py tests/test_arango_connection.py`
 
