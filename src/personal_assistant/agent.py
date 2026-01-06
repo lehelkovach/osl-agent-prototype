@@ -928,7 +928,52 @@ class PersonalAssistantAgent:
                             dom_snapshot = params.get("dom_snapshot")
                             concept_uuid = params.get("concept_uuid")
                             pattern_name = params.get("pattern_name")
+                            form_type_hint = params.get("form_type")
+                            reuse_min_score = float(params.get("reuse_min_score") or os.getenv("KSG_PATTERN_REUSE_MIN_SCORE", "2.0"))
                             
+                            # Reuse-first: if we already have a stored CPMS pattern that matches this
+                            # page strongly, return it immediately and avoid a CPMS call.
+                            if self.use_cpms_for_forms and self.ksg and url and html:
+                                try:
+                                    best = self.ksg.find_best_cpms_pattern(
+                                        url=url,
+                                        html=html,
+                                        form_type=form_type_hint,
+                                        top_k=1,
+                                    )
+                                    if best and best[0].get("score", 0.0) >= reuse_min_score:
+                                        concept = best[0].get("concept") or {}
+                                        pdata = best[0].get("pattern_data") or {}
+                                        res = {
+                                            "status": "success",
+                                            "pattern": pdata,
+                                            "pattern_uuid": concept.get("uuid"),
+                                            "reused": True,
+                                            "reuse_score": best[0].get("score"),
+                                        }
+                                        # If a concept_uuid was provided, ensure it is linked (best-effort).
+                                        if concept_uuid and concept.get("uuid"):
+                                            try:
+                                                self.ksg.add_association(
+                                                    from_concept_uuid=concept_uuid,
+                                                    to_concept_uuid=concept["uuid"],
+                                                    relation_type="has_pattern",
+                                                    strength=1.0,
+                                                    props={"pattern_name": concept.get("props", {}).get("name") if isinstance(concept.get("props"), dict) else None},
+                                                )
+                                            except Exception:
+                                                pass
+                                        # Short-circuit: do not call CPMS.
+                                        return {
+                                            "status": "success",
+                                            "tool": tool_name,
+                                            "params": params,
+                                            "result": res,
+                                        }
+                                except Exception:
+                                    # Ignore reuse errors; fall back to CPMS.
+                                    pass
+
                             pattern_data = self.cpms.detect_form_pattern(
                                 html=html,
                                 screenshot_path=screenshot_path,

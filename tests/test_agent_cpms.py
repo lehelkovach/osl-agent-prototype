@@ -11,6 +11,8 @@ from src.personal_assistant.mock_tools import (
 )
 from src.personal_assistant.openai_client import FakeOpenAIClient
 from src.personal_assistant.models import Node, Provenance
+from src.personal_assistant.form_fingerprint import compute_form_fingerprint
+from src.personal_assistant.knowshowgo import KnowShowGoAPI
 
 
 class FakeCpmsClient:
@@ -171,6 +173,79 @@ class TestAgentCPMS(unittest.TestCase):
             if e.rel == "has_pattern" and e.from_node == parent.uuid
         ]
         self.assertTrue(has_pattern_edges, "Expected parent -> pattern has_pattern edge")
+
+    def test_cpms_detect_form_reuses_stored_pattern_before_calling_cpms(self):
+        """
+        When form pattern reuse is enabled, cpms.detect_form should return an existing stored pattern
+        for the same URL/HTML (strong match) and not call the CPMS client.
+        """
+        memory = MockMemoryTools()
+
+        # Store a CPMS pattern concept directly in memory (as store_cpms_pattern would).
+        url = "https://example.com/login"
+        html = "<form><input type='email' name='email'><input type='password' name='password'></form>"
+        fp = compute_form_fingerprint(url=url, html=html).to_dict()
+        stored = Node(
+            kind="Concept",
+            labels=["Pattern", "example.com:login"],
+            props={
+                "name": "example.com:login",
+                "source": "cpms",
+                "pattern_data": {
+                    "form_type": "login",
+                    "fields": [{"type": "email", "selector": "input[type='email']", "confidence": 0.9}],
+                    "confidence": 0.9,
+                    "fingerprint": fp,
+                },
+            },
+        )
+        memory.upsert(stored, Provenance(source="user", ts="2026-01-01T00:00:00Z", confidence=1.0, trace_id="t"), embedding_request=False)
+
+        # CPMS client that should never be called.
+        cpms_client = FakeCpmsClient()
+
+        def _detect_form(*_args, **_kwargs):
+            raise AssertionError("CPMS detect_form should not be called when reuse succeeds")
+
+        cpms_client.detect_form = _detect_form  # type: ignore[attr-defined]
+        cpms_adapter = CPMSAdapter(cpms_client)
+
+        plan = """
+        {
+          "intent": "task",
+          "steps": [
+            {
+              "tool": "cpms.detect_form",
+              "params": {
+                "html": "%s",
+                "url": "%s",
+                "form_type": "login",
+                "reuse_min_score": 2.0
+              }
+            }
+          ]
+        }
+        """ % (html.replace('"', '\\"'), url)
+
+        # Ensure KSG is present (it uses memory) and reuse is enabled.
+        agent = PersonalAssistantAgent(
+            memory,
+            MockCalendarTools(),
+            MockTaskTools(),
+            web=MockWebTools(),
+            contacts=MockContactsTools(),
+            cpms=cpms_adapter,
+            ksg=KnowShowGoAPI(memory, embed_fn=lambda _: [0.1, 0.1]),
+            use_cpms_for_forms=True,
+            openai_client=FakeOpenAIClient(chat_response=plan, embedding=[0.1, 0.1, 0.1]),
+        )
+
+        result = agent.execute_request("reuse stored pattern")
+        self.assertEqual(result["execution_results"]["status"], "completed")
+        step = result["execution_results"]["steps"][0]
+        self.assertEqual(step["status"], "success")
+        self.assertTrue(step.get("reused"), "Expected reuse=True")
+        self.assertEqual(step.get("pattern_uuid"), stored.uuid)
 
 
 if __name__ == "__main__":
