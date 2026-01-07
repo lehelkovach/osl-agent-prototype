@@ -25,6 +25,8 @@ from src.personal_assistant.shell_executor import RealShellTools
 
 class ChatRequest(BaseModel):
     message: str
+    feedback: Optional[str] = None  # Optional feedback/correction for previous interaction
+    trace_id: Optional[str] = None  # Optional trace_id to link feedback to previous interaction
 
 
 class EventCollectorBus(EventBus):
@@ -419,7 +421,44 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         bus = EventCollectorBus(events)
         agent.event_bus = bus
         log = get_logger("chat")
-        log.info("chat_request", message=body.message)
+        log.info("chat_request", message=body.message, has_feedback=bool(body.feedback))
+        
+        # Handle user feedback/correction if provided
+        if body.feedback and body.trace_id:
+            try:
+                from src.personal_assistant.models import Provenance
+                from datetime import datetime, timezone
+                
+                # Find the previous execution result from trace_id
+                # For now, we'll use the feedback directly with the learning engine
+                provenance = Provenance(
+                    source="user",
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    confidence=1.0,
+                    trace_id=body.trace_id,
+                )
+                
+                # Learn from user feedback
+                knowledge_uuid = agent.learning_engine.learn_from_user_feedback(
+                    user_feedback=body.feedback,
+                    original_request=body.message,
+                    plan={},  # Would need to retrieve from trace_id in full implementation
+                    execution_results={"status": "error", "error": "User provided correction"},
+                    provenance=provenance,
+                )
+                
+                if knowledge_uuid:
+                    log.info("learned_from_feedback", knowledge_uuid=knowledge_uuid, trace_id=body.trace_id)
+                    # Return acknowledgment
+                    return {
+                        "plan": {"intent": "inform", "steps": []},
+                        "execution_results": {"status": "completed"},
+                        "raw_llm": f"Thank you for the feedback. I've learned from it and will apply it in the future.",
+                        "events": [],
+                    }
+            except Exception as exc:
+                log.warning("feedback_processing_failed", error=str(exc))
+        
         try:
             # #region agent log
             try:

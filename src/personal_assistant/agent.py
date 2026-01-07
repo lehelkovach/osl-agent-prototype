@@ -18,6 +18,7 @@ from src.personal_assistant.knowshowgo import KnowShowGoAPI
 from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
 from src.personal_assistant.logging_setup import get_logger
+from src.personal_assistant.learning_engine import LearningEngine
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -58,13 +59,21 @@ class PersonalAssistantAgent:
             self.openai_client = OpenAIClient()
         else:
             self.openai_client = openai_client
-        self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text)
+        self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=self._embed_text)
+        self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text, ksg=self.ksg)
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
-        self.form_retriever = FormDataRetriever(memory)
-        self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=self._embed_text)
+        self.form_retriever = FormDataRetriever(memory, embed_fn=self._embed_text)
         self.dag_executor = DAGExecutor(memory, queue_manager=self.queue_manager)
         self.log = get_logger("agent")
+        # Enhanced learning engine for continual improvement
+        from src.personal_assistant.learning_engine import LearningEngine
+        self.learning_engine = LearningEngine(
+            memory=memory,
+            ksg=self.ksg,
+            llm_client=self.openai_client,
+            embed_fn=self._embed_text,
+        )
         # Flag to route procedure ops through CPMS if present
         if use_cpms_for_procs is None:
             self.use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS") == "1"
@@ -330,19 +339,32 @@ class PersonalAssistantAgent:
             trace_id=provenance.trace_id,
         )
 
-        # 4. Execute via Tools
+        # 4. Execute via Tools with retry logic (1-3 attempts)
         execution_results = self._execute_plan(plan, provenance)
-        if execution_results.get("status") == "error":
+        max_adaptation_attempts = int(os.getenv("MAX_ADAPTATION_ATTEMPTS", "3"))
+        adaptation_attempt = 0
+        
+        while execution_results.get("status") == "error" and adaptation_attempt < max_adaptation_attempts:
+            adaptation_attempt += 1
             # #region agent log
             try:
                 with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"location": "agent.py:316", "message": "execution failed, attempting adaptation", "data": {"error": str(execution_results.get("error", ""))[:200], "trace_id": provenance.trace_id}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
+                    f.write(json.dumps({"location": "agent.py:335", "message": "execution failed, attempting adaptation", "data": {"attempt": adaptation_attempt, "max_attempts": max_adaptation_attempts, "error": str(execution_results.get("error", ""))[:200], "trace_id": provenance.trace_id}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
             except Exception:
                 pass
             # #endregion
-            # Single adaptation attempt: ask LLM to adjust based on the error context.
+            
+            # Adaptation attempt: ask LLM to adjust based on the error context.
             err = execution_results.get("error", "")
-            adapt_request = f"{user_request}\nPrevious plan failed with error: {err}. Adjust selectors/URLs/values and try again."
+            errors = execution_results.get("errors", [])
+            error_text = err or (errors[0] if errors else "Execution failed")
+            
+            adapt_request = (
+                f"{user_request}\n"
+                f"Previous plan failed (attempt {adaptation_attempt}/{max_adaptation_attempts}) with error: {error_text}. "
+                f"Adjust selectors/URLs/values and try again. If you're unsure, ask the user for guidance."
+            )
+            
             plan, raw_llm = self._generate_plan(
                 intent,
                 adapt_request,
@@ -353,14 +375,17 @@ class PersonalAssistantAgent:
                 proc_matches,
             )
             plan["adapted"] = True
+            plan["adaptation_attempt"] = adaptation_attempt
             plan["raw_llm"] = raw_llm or plan.get("raw_llm")
+            
             # #region agent log
             try:
                 with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"location": "agent.py:329", "message": "adapted plan generated", "data": {"steps_count": len(plan.get("steps", [])), "has_procedure_create": any(s.get("tool") == "procedure.create" for s in plan.get("steps", []))}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
+                    f.write(json.dumps({"location": "agent.py:360", "message": "adapted plan generated", "data": {"attempt": adaptation_attempt, "steps_count": len(plan.get("steps", [])), "has_procedure_create": any(s.get("tool") == "procedure.create" for s in plan.get("steps", []))}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
             except Exception:
                 pass
             # #endregion
+            
             self._emit(
                 "plan_ready",
                 {
@@ -368,10 +393,22 @@ class PersonalAssistantAgent:
                     "raw_llm": plan.get("raw_llm"),
                     "trace_id": provenance.trace_id,
                     "fallback": plan.get("fallback", False),
+                    "adaptation_attempt": adaptation_attempt,
                 },
             )
+            
             execution_results = self._execute_plan(plan, provenance)
-        # If execution still failed and we have no way forward, ask the user for guidance.
+            
+            # If adaptation succeeded, break out of retry loop
+            if execution_results.get("status") == "completed":
+                self.log.info(
+                    "adaptation_succeeded",
+                    attempt=adaptation_attempt,
+                    trace_id=provenance.trace_id,
+                )
+                break
+        
+        # If execution still failed after all retries, ask the user for guidance.
         if execution_results.get("status") == "error" and intent not in ("remember", "task", "schedule"):
             clarification = (
                 f"I hit an error while executing the plan: {execution_results.get('error', '')}. "
@@ -423,21 +460,61 @@ class PersonalAssistantAgent:
             # Persistence should not break the main loop
             pass
         
-        # Auto-generalize: If execution succeeded and multiple similar concepts were found,
-        # automatically merge them into a generalized pattern
-        if execution_results.get("status") == "completed" and self.ksg:
+        # Enhanced learning: Learn from success or failure
+        if execution_results.get("status") == "completed":
+            # Extract lessons from successful execution
             try:
-                self._auto_generalize_if_applicable(
-                    concept_matches=concept_matches,
+                knowledge_uuid = self.learning_engine.learn_from_success(
+                    user_request=user_request,
+                    plan=plan,
                     execution_results=execution_results,
-                    provenance=provenance
+                    provenance=provenance,
                 )
+                if knowledge_uuid:
+                    self.log.info(
+                        "learned_from_success",
+                        knowledge_uuid=knowledge_uuid,
+                        trace_id=provenance.trace_id,
+                    )
             except Exception as exc:
                 self.log.warning(
-                    "auto_generalize_error",
+                    "learning_from_success_failed",
                     error=str(exc),
                     trace_id=provenance.trace_id,
                 )
+            
+            # Auto-generalize: If execution succeeded and multiple similar concepts were found,
+            # automatically merge them into a generalized pattern
+            if self.ksg:
+                try:
+                    self._auto_generalize_if_applicable(
+                        concept_matches=concept_matches,
+                        execution_results=execution_results,
+                        provenance=provenance
+                    )
+                except Exception as exc:
+                    self.log.warning(
+                        "auto_generalize_error",
+                        error=str(exc),
+                        trace_id=provenance.trace_id,
+                    )
+        elif execution_results.get("status") == "error":
+            # Store failure analysis for future reference (non-blocking)
+            try:
+                failure_analysis = self.learning_engine.analyze_failure(
+                    user_request=user_request,
+                    plan=plan,
+                    execution_results=execution_results,
+                    similar_cases=None,
+                )
+                if failure_analysis.get("status") == "success":
+                    self.log.info(
+                        "analyzed_failure",
+                        trace_id=provenance.trace_id,
+                        root_cause=failure_analysis.get("analysis", {}).get("root_cause", "")[:100],
+                    )
+            except Exception:
+                pass  # Non-blocking
         
         self._emit(
             "execution_completed",
@@ -661,7 +738,7 @@ class PersonalAssistantAgent:
                             {
                                 "trace_id": provenance.trace_id,
                                 "task_uuid": task_node.uuid,
-                                "items": queue.props.get("items", []),
+                                "items": self.queue_manager.list_items(provenance),
                             },
                         )
                 elif tool_name == "calendar.create_event":
@@ -817,17 +894,17 @@ class PersonalAssistantAgent:
                         "queue_updated",
                         {
                             "trace_id": provenance.trace_id,
-                            "items": enqueue_res.props.get("items", []),
+                            "items": self.queue_manager.list_items(provenance),
                         },
                     )
                 elif tool_name == "queue.update":
                     queue = self.queue_manager.update_items(params.get("items", []), provenance)
-                    res = {"status": "success", "queue": queue.props.get("items", [])}
+                    res = {"status": "success", "queue": self.queue_manager.list_items(provenance)}
                     self._emit(
                         "queue_updated",
                         {
                             "trace_id": provenance.trace_id,
-                            "items": queue.props.get("items", []),
+                            "items": self.queue_manager.list_items(provenance),
                         },
                     )
                 elif tool_name == "memory.remember":
@@ -1177,22 +1254,62 @@ class PersonalAssistantAgent:
     def _autofill_form(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Autofill a form using stored FormData/Identity/Credential/PaymentMethod concepts.
-        params: {"url": str, "selectors": {field: selector}, "required_fields": [field], "query": optional str}
+        If the form is detected as a survey, also match similar questions and reuse answers.
+        params: {"url": str, "selectors": {field: selector}, "required_fields": [field], "query": optional str, "questions": optional list}
         """
         if not self.web:
             return {"status": "error", "error": "WebTools not configured"}
         selectors = params.get("selectors", {})
         required_fields = params.get("required_fields") or list(selectors.keys())
         query = params.get("query", "form data")
+        
+        # First, try standard form data autofill
         fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
+        
+        # If questions are provided (survey form), try to match similar questions
+        questions = params.get("questions", [])
+        if questions:
+            # Get survey context embedding
+            survey_context = " ".join([q.get("question", "") or q.get("label", "") for q in questions])
+            query_embedding = self._embed_text(survey_context) if survey_context else None
+            
+            # Match survey answers
+            survey_answers = self.form_retriever.match_survey_answers(
+                questions=questions,
+                query_embedding=query_embedding,
+                top_k=5
+            )
+            
+            # Merge survey answers into fill_map (survey answers take precedence for matching fields)
+            for field, answer in survey_answers.items():
+                if field in selectors:  # Only use if field has a selector
+                    fill_map[field] = answer
+        
         filled = []
+        url = params.get("url", "about:blank")
+        
+        # Build selectors dict for web.fill
+        selectors_dict = {}
+        values_dict = {}
         for field, selector in selectors.items():
             val = fill_map.get(field)
-            if val is None:
-                continue
-            res = self.web.fill(url=params.get("url", "about:blank"), selector=selector, text=str(val))
-            filled.append({"field": field, "value": val, "selector": selector, "result": res})
-        return {"status": "success", "filled": filled}
+            if val is not None:
+                selectors_dict[field] = selector
+                values_dict[field] = str(val)
+        
+        if selectors_dict:
+            # Use web.fill with selectors and values
+            res = self.web.fill(url=url, selectors=selectors_dict, values=values_dict)
+            if res.get("status") == "success":
+                for field, selector in selectors_dict.items():
+                    filled.append({
+                        "field": field,
+                        "value": values_dict[field],
+                        "selector": selector,
+                        "result": res
+                    })
+        
+        return {"status": "success", "filled": filled, "fill_map": fill_map}
 
     def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
         """

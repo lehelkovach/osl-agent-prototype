@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from src.personal_assistant.models import Node, Edge, Provenance
 from src.personal_assistant.tools import MemoryTools
+from src.personal_assistant.ksg_orm import KSGORM
 
 
 EmbedFn = Callable[[str], List[float]]
@@ -28,6 +29,7 @@ class KnowShowGoAPI:
     def __init__(self, memory: MemoryTools, embed_fn: Optional[EmbedFn] = None):
         self.memory = memory
         self.embed_fn = embed_fn
+        self.orm = KSGORM(memory)  # ORM for prototype-based object hydration
 
     def create_prototype(
         self,
@@ -39,25 +41,49 @@ class KnowShowGoAPI:
         provenance: Optional[Provenance] = None,
         base_prototype_uuid: Optional[str] = None,
     ) -> str:
+        """
+        Create a Prototype (Topic with isPrototype=true).
+        
+        Aligned with Knowshowgo v0.1: Prototypes are Topics with isPrototype=true.
+        """
         prov = provenance or Provenance(
             source="user",
             ts=datetime.now(timezone.utc).isoformat(),
             confidence=1.0,
             trace_id="knowshowgo",
         )
+        # Create Prototype as Topic with isPrototype=true
+        proto_labels = labels or [name]
         proto = Node(
-            kind="Prototype",
-            labels=labels or ["prototype"],
-            props={"name": name, "description": description, "context": context},
+            kind="topic",  # All nodes are Topics in Knowshowgo
+            labels=proto_labels,
+            props={
+                "label": name,  # Primary label
+                "aliases": proto_labels[1:] if len(proto_labels) > 1 else [],  # Additional labels
+                "summary": description,
+                "isPrototype": True,  # Mark as Prototype
+                "status": "active",
+                "namespace": "public",
+                "context": context,  # Additional context
+                # Backward compat
+                "name": name,
+                "description": description,
+            },
             llm_embedding=embedding,
         )
         self.memory.upsert(proto, prov, embedding_request=True)
         if base_prototype_uuid:
+            # Use inherits edge (Knowshowgo design)
             edge = Edge(
                 from_node=proto.uuid,
                 to_node=base_prototype_uuid,
-                rel="inherits_from",
-                props={"child": name, "parent_uuid": base_prototype_uuid},
+                rel="inherits",  # Knowshowgo: inherits edge collection
+                props={
+                    "child": name,
+                    "parent_uuid": base_prototype_uuid,
+                    "w": 1.0,  # Weight
+                    "status": "accepted",
+                },
             )
             self.memory.upsert(edge, prov, embedding_request=False)
         return proto.uuid
@@ -70,32 +96,63 @@ class KnowShowGoAPI:
         provenance: Optional[Provenance] = None,
         previous_version_uuid: Optional[str] = None,
     ) -> str:
+        """
+        Create a Concept (Topic with isPrototype=false).
+        
+        Aligned with Knowshowgo v0.1: Concepts are Topics with isPrototype=false.
+        Uses instanceOf association to link to Prototype.
+        """
         prov = provenance or Provenance(
             source="user",
             ts=datetime.now(timezone.utc).isoformat(),
             confidence=1.0,
             trace_id="knowshowgo",
         )
+        # Extract label and aliases from json_obj
+        label = json_obj.get("name") or json_obj.get("label") or "concept"
+        aliases = json_obj.get("aliases", [])
+        if label not in aliases:
+            aliases = [label] + aliases
+        
+        # Create Concept as Topic with isPrototype=false
         concept = Node(
-            kind="Concept",
-            labels=[json_obj.get("name", "concept")],
-            props={**json_obj, "prototype_uuid": prototype_uuid},
+            kind="topic",  # All nodes are Topics in Knowshowgo
+            labels=aliases,  # Primary label + aliases
+            props={
+                "label": label,  # Primary label
+                "aliases": aliases[1:] if len(aliases) > 1 else [],  # Additional labels
+                "summary": json_obj.get("description") or json_obj.get("summary", ""),
+                "isPrototype": False,  # Mark as Concept (not Prototype)
+                "status": "active",
+                "namespace": "public",
+                "prototype_uuid": prototype_uuid,  # Backward compat
+                **{k: v for k, v in json_obj.items() if k not in ("name", "label", "aliases", "description", "summary")},
+            },
             llm_embedding=embedding,
         )
         self.memory.upsert(concept, prov, embedding_request=True)
-        edge = Edge(
-            from_node=concept.uuid,
-            to_node=prototype_uuid,
-            rel="instantiates",
-            props={"prototype_uuid": prototype_uuid},
+        
+        # Create instanceOf association (Knowshowgo: instanceOf PropertyDef)
+        # Use add_association to get PropertyDef reference
+        self.add_association(
+            from_concept_uuid=concept.uuid,
+            to_concept_uuid=prototype_uuid,
+            relation_type="instanceOf",
+            strength=1.0,
+            provenance=prov,
         )
-        self.memory.upsert(edge, prov, embedding_request=False)
+        
         if previous_version_uuid:
+            # Version chain edge
             version_edge = Edge(
                 from_node=previous_version_uuid,
                 to_node=concept.uuid,
                 rel="next_version",
-                props={"prototype_uuid": prototype_uuid},
+                props={
+                    "prototype_uuid": prototype_uuid,
+                    "w": 1.0,
+                    "status": "accepted",
+                },
             )
             self.memory.upsert(version_edge, prov, embedding_request=False)
         return concept.uuid
@@ -107,6 +164,7 @@ class KnowShowGoAPI:
         similarity_threshold: float = 0.0,
         prototype_filter: Optional[str] = None,
         query_embedding: Optional[List[float]] = None,
+        hydrate: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Fuzzy search for concepts by embedding similarity.
@@ -121,9 +179,11 @@ class KnowShowGoAPI:
             similarity_threshold: Minimum similarity score (0.0-1.0). Results below this are filtered out.
             prototype_filter: Optional prototype filter (requires edge traversal)
             query_embedding: Optional pre-computed query embedding
+            hydrate: If True, automatically populate results with prototype properties (ORM-style)
             
         Returns:
-            List of concept dicts with similarity scores (if available from memory backend)
+            List of concept dicts with similarity scores (if available from memory backend).
+            If hydrate=True, objects are populated with prototype properties + concept values.
         """
         if query_embedding is None and self.embed_fn:
             try:
@@ -131,12 +191,17 @@ class KnowShowGoAPI:
             except Exception:
                 query_embedding = None
 
-        filters = {"kind": "Concept"}
+        filters = {"kind": "topic"}  # All nodes are topics in Knowshowgo
         if prototype_filter:
             # Note: prototype filtering would require edge traversal, simplified here
             pass
 
         results = self.memory.search(query, top_k=top_k, filters=filters, query_embedding=query_embedding)
+        
+        if hydrate:
+            # Use ORM to hydrate results
+            return self.orm.query(query, top_k=top_k, hydrate=True)
+        
         normalized = []
         for r in results:
             if isinstance(r, dict):
@@ -144,6 +209,74 @@ class KnowShowGoAPI:
             elif hasattr(r, "__dict__"):
                 normalized.append(r.__dict__)
         return normalized
+    
+    def get_concept_hydrated(self, concept_uuid: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a concept and automatically hydrate it with prototype properties.
+        
+        This is the ORM-style method that:
+        1. Loads the concept
+        2. Finds its prototype (via instanceOf)
+        3. Loads prototype property definitions
+        4. Merges prototype properties (schema) with concept values
+        5. Returns a hydrated object
+        
+        Similar to JavaScript prototype-based OOP where:
+        - Prototype defines properties (schema)
+        - Concept provides values (instance data)
+        - Object automatically has all prototype properties + concept values
+        
+        Args:
+            concept_uuid: UUID of the concept to retrieve
+            
+        Returns:
+            Hydrated object dict with prototype properties + concept values, or None if not found
+        """
+        return self.orm.get_concept(concept_uuid, hydrate=True)
+    
+    def create_object(self, prototype_name: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a new concept object from a prototype name and properties (ORM-style).
+        
+        Similar to JavaScript: `new Person({name: "John", email: "john@example.com"})`
+        
+        Args:
+            prototype_name: Name of the prototype (e.g., "Person", "Procedure")
+            properties: Dictionary of property names to values
+            
+        Returns:
+            Hydrated concept object
+        """
+        return self.orm.create_object(prototype_name, properties, embed_fn=self.embed_fn)
+    
+    def save_object(self, hydrated_obj: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Save a hydrated object back to the knowledge graph (ORM-style).
+        
+        Updates the concept with new property values. Similar to JavaScript object assignment.
+        
+        Args:
+            hydrated_obj: Hydrated concept object (from get_concept_hydrated or create_object)
+            
+        Returns:
+            Updated hydrated object
+        """
+        return self.orm.save_object(hydrated_obj, embed_fn=self.embed_fn)
+    
+    def update_properties(self, concept_uuid: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Update specific properties of a concept (ORM-style).
+        
+        Similar to JavaScript: `object.property = value` or `Object.assign(object, {property: value})`
+        
+        Args:
+            concept_uuid: UUID of the concept to update
+            properties: Dictionary of property names to new values
+            
+        Returns:
+            Updated hydrated object
+        """
+        return self.orm.update_properties(concept_uuid, properties, embed_fn=self.embed_fn)
 
     def create_concept_recursive(
         self,
@@ -370,21 +503,28 @@ class KnowShowGoAPI:
         strength: float = 1.0,
         props: Optional[Dict[str, Any]] = None,
         provenance: Optional[Provenance] = None,
+        property_def_uuid: Optional[str] = None,
     ) -> str:
         """
-        Create a fuzzy association edge between two concepts.
+        Create a fuzzy association edge between two concepts (Topics).
+        
+        Aligned with Knowshowgo v0.1 Association model:
+        - Properties-as-edges with PropertyDef reference (p)
+        - Weight (w) for fuzzy association strength (0.0-1.0)
+        - Confidence, provenance, status
         
         In a fuzzy ontology, relationships have degrees of strength (0.0-1.0),
         not just binary true/false. This enables uncertainty handling and
         partial membership in relationships.
         
         Args:
-            from_concept_uuid: Source concept UUID
-            to_concept_uuid: Target concept UUID
-            relation_type: Type of relationship (e.g., "has_a", "uses", "contains", "depends_on", "associated_with")
-            strength: Relationship strength (0.0-1.0), default 1.0 (strong). This is the fuzzy membership degree.
-            props: Optional properties for the edge (strength will be added/overridden)
+            from_concept_uuid: Source concept/topic UUID
+            to_concept_uuid: Target concept/topic UUID
+            relation_type: Type of relationship (e.g., "hasStep", "relatedTo", "instanceOf")
+            strength: Relationship weight/strength (0.0-1.0), default 1.0 (strong). Stored as "w".
+            props: Optional properties for the edge (w, p, confidence, status will be added/overridden)
             provenance: Optional provenance
+            property_def_uuid: Optional PropertyDef UUID reference (p field). If None, will search for PropertyDef by relation_type.
             
         Returns:
             Edge UUID
@@ -396,11 +536,37 @@ class KnowShowGoAPI:
             trace_id="knowshowgo-assoc",
         )
         edge_props = props.copy() if props else {}
-        edge_props["strength"] = strength  # Explicit fuzzy relationship strength
+        
+        # Find or use PropertyDef reference (p field per Knowshowgo design)
+        prop_def_uuid = property_def_uuid
+        if not prop_def_uuid:
+            # Search for PropertyDef by relation_type name
+            try:
+                prop_def_results = self.memory.search(
+                    relation_type, top_k=1, filters={"kind": "PropertyDef"}
+                )
+                if prop_def_results:
+                    prop_def_uuid = prop_def_results[0].get("uuid") if isinstance(prop_def_results[0], dict) else getattr(prop_def_results[0], "uuid", None)
+            except Exception:
+                pass  # Continue without PropertyDef reference if search fails
+        
+        # Set Knowshowgo Association fields
+        edge_props["w"] = strength  # Weight (primary fuzzy association strength)
+        edge_props["strength"] = strength  # Backward compat
+        if prop_def_uuid:
+            edge_props["p"] = prop_def_uuid  # PropertyDef reference (predicate)
+        edge_props["confidence"] = prov.confidence  # From provenance
+        edge_props["status"] = edge_props.get("status", "accepted")  # Default to accepted
+        edge_props["provenance"] = {
+            "type": prov.source,
+            "trace_id": prov.trace_id,
+            "ts": prov.ts,
+        }
+        
         edge = Edge(
             from_node=from_concept_uuid,
             to_node=to_concept_uuid,
-            rel=relation_type,
+            rel=relation_type,  # Backward compat (also stored in props if needed)
             props=edge_props,
         )
         self.memory.upsert(edge, prov, embedding_request=False)
