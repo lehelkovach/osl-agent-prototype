@@ -40,6 +40,9 @@
 - **KnowShowGo Integration**: Enhanced KnowShowGo API with recursive concept creation, embedding-based search, CPMS pattern storage, and concept generalization. Agent now queries KnowShowGo concepts before asking user, supports nested DAG structures (procedures containing sub-procedures), and can merge exemplars into generalized patterns with taxonomy hierarchies.
 - **DAG Execution Engine**: Added `dag_executor.py` to load and execute DAG structures from concepts. Evaluates bottom nodes, checks guards/rules, and enqueues tool commands. Supports nested DAG execution.
 - **CPMS Form Detection**: Added basic CPMS form detection with fallback. Integration points defined for full CPMS API integration (see `docs/cpms-integration-plan.md`).
+- **CPMS v0.1.2 detect_form + reuse-first**: CPMS adapter now uses `detect_form()` (v0.1.2), normalizes responses, and falls back safely. Patterns can be stored into KnowShowGo with a deterministic fingerprint derived from `url+html`, and the agent can reuse a stored pattern before calling CPMS again (when enabled).
+- **Pattern retrieval helper**: `KnowShowGoAPI.find_best_cpms_pattern(url, html, form_type?)` ranks stored patterns by domain + token overlap to support reuse.
+- **New plan doc**: `docs/development-plan.md` is the canonical next-steps checklist for the prototype goals.
 - **Vault Credential Lookup**: Added `vault.query_credentials` tool to query credentials/identity associated with concepts or URLs.
 - **LLM Prompts Updated**: Added instructions for recursive concept creation, embedding-based memory queries, CPMS integration, and concept generalization.
 - Name recall formats responses from Name/Person nodes even without a query string, parsing names from note/value fields to return `Your name is ...`.
@@ -84,6 +87,7 @@
 - Adjust memory recall heuristics so inform queries prefer the most relevant Concept/note over Person/Name nodes.
 - Decide on dual-write/strength-weighting later; defer until core abstraction is stable.
 - **CPMS Integration**: See `docs/cpms-integration-plan.md` for detailed CPMS development tasks. Core agent/KnowShowGo integration is complete; CPMS-specific work (pattern matching API, observation building, signal extraction) can proceed in parallel.
+- **Pattern reuse in workflows**: integrate pattern retrieval into actual login/billing flows so the agent can autofill with stored patterns/datasets without needing to call CPMS every time.
 
 ## Environment / flags
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
@@ -100,7 +104,7 @@
 - Latest: `pytest tests/test_cpms_routing_toggle.py -q` (passing).
 - Latest: `pytest tests/test_agent_plan_fallback_on_error.py tests/test_agent_ask_user_on_empty_plan.py -q` (passing).
 - Latest: `pytest tests/test_agent_procedure_selector_update.py tests/test_agent_ask_user_on_execution_error.py -q` (passing).
-- Latest: `pytest -q` (all tests; 129 passed, 6 skipped).
+- Latest: `pytest -q` (all tests; 171 passed, 12 skipped).
 
 ## Guidance
 - See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).

@@ -1,8 +1,10 @@
 from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from src.personal_assistant.models import Node, Edge, Provenance
 from src.personal_assistant.tools import MemoryTools
+from src.personal_assistant.form_fingerprint import compute_form_fingerprint
 
 
 EmbedFn = Callable[[str], List[float]]
@@ -405,6 +407,72 @@ class KnowShowGoAPI:
         )
         self.memory.upsert(edge, prov, embedding_request=False)
         return edge.uuid
+
+    def find_best_cpms_pattern(
+        self,
+        url: str,
+        html: str,
+        form_type: Optional[str] = None,
+        top_k: int = 1,
+        search_limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """
+        Retrieve the best stored CPMS pattern(s) for a given URL+HTML.
+
+        This is a prototype-stage matcher:
+        - strong preference for same-domain patterns
+        - optional preference for matching form_type
+        - token overlap between fingerprints
+        """
+        fp = compute_form_fingerprint(url=url, html=html).to_dict()
+        fp_tokens = set(fp.get("tokens") or [])
+        domain = (urlparse(url).netloc or "").lower()
+
+        # Pull candidate concepts and filter down to CPMS Pattern concepts.
+        candidates = self.memory.search(
+            query_text=f"{domain} {form_type or ''}".strip(),
+            top_k=search_limit,
+            filters={"kind": "Concept"},
+            query_embedding=self.embed_fn(f"{domain} {form_type}".strip()) if self.embed_fn else None,
+        )
+        patterns: List[Dict[str, Any]] = []
+        for c in candidates:
+            props = (c or {}).get("props") if isinstance(c, dict) else None
+            if not isinstance(props, dict):
+                continue
+            if props.get("source") != "cpms":
+                continue
+            if "pattern_data" not in props:
+                continue
+            patterns.append(c)
+
+        scored: List[Dict[str, Any]] = []
+        for p in patterns:
+            props = p.get("props") or {}
+            pdata = props.get("pattern_data") if isinstance(props.get("pattern_data"), dict) else {}
+            pfp = pdata.get("fingerprint") if isinstance(pdata.get("fingerprint"), dict) else {}
+            p_tokens = set(pfp.get("tokens") or [])
+
+            overlap = len(fp_tokens & p_tokens)
+            union = len(fp_tokens | p_tokens) or 1
+            jaccard = overlap / union
+
+            p_domain = (pfp.get("domain") or "").lower()
+            domain_bonus = 1.0 if p_domain and domain and p_domain == domain else 0.0
+            type_bonus = 0.5 if form_type and pdata.get("form_type") == form_type else 0.0
+
+            score = (2.0 * domain_bonus) + type_bonus + jaccard
+
+            scored.append(
+                {
+                    "score": score,
+                    "concept": p,
+                    "pattern_data": pdata,
+                }
+            )
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[: max(0, top_k)]
 
     def create_object_with_properties(
         self,

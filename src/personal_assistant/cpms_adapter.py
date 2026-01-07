@@ -95,16 +95,28 @@ class CPMSAdapter:
         Returns:
             Dict with form_type, fields (list of field dicts), confidence, and optional pattern_id
         """
-        # Try CPMS API first if available
-        # cpms-client v0.1.2+ includes detect_form() method
+        # Try CPMS API first if available (cpms-client v0.1.2+ includes detect_form()).
         if hasattr(self.client, "detect_form"):
             try:
-                # Use high-level detect_form endpoint from cpms-client v0.1.2+
+                # Use high-level detect_form endpoint from cpms-client v0.1.2+.
+                #
+                # Prefer base64 screenshot (more portable) when we can read it;
+                # otherwise pass through screenshot_path as-is.
+                screenshot_b64: Optional[str] = None
+                screenshot_path_arg: Optional[str] = None
+                if screenshot_path:
+                    if os.path.exists(screenshot_path):
+                        with open(screenshot_path, "rb") as f:
+                            screenshot_b64 = base64.b64encode(f.read()).decode("utf-8")
+                    else:
+                        screenshot_path_arg = screenshot_path
+
                 result = self.client.detect_form(
                     html=html,
-                    screenshot_path=screenshot_path,
+                    screenshot_path=screenshot_path_arg,
+                    screenshot=screenshot_b64,
                     url=url,
-                    dom_snapshot=dom_snapshot
+                    dom_snapshot=dom_snapshot,
                 )
                 if result:
                     # Response should already be in expected format

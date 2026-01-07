@@ -66,9 +66,9 @@ class TestCPMSAdapter(unittest.TestCase):
 class FakeCpmsClientWithPatterns(FakeCpmsClient):
     """Extended fake client that supports pattern detection"""
     
-    def match_pattern(self, html=None, screenshot_path=None, observation=None):
-        """Mock CPMS pattern matching"""
-        # Simple detection logic for testing
+    def detect_form(self, html, screenshot_path=None, screenshot=None, url=None, dom_snapshot=None, observation=None):
+        """Mock CPMS v0.1.2+ detect_form() API."""
+        # Minimal, deterministic behavior for tests.
         if "email" in html.lower() or "password" in html.lower():
             return {
                 "form_type": "login",
@@ -78,28 +78,24 @@ class FakeCpmsClientWithPatterns(FakeCpmsClient):
                         "selector": "input[type='email']",
                         "xpath": "/html/body/form/input[1]",
                         "confidence": 0.95,
-                        "signals": {"attributes": {"type": "email"}}
+                        "signals": {"attributes": {"type": "email"}},
                     },
                     {
                         "type": "password",
                         "selector": "input[type='password']",
                         "confidence": 0.98,
-                        "signals": {"attributes": {"type": "password"}}
+                        "signals": {"attributes": {"type": "password"}},
                     },
                     {
                         "type": "submit",
                         "selector": "button[type='submit']",
-                        "confidence": 0.90
-                    }
+                        "confidence": 0.90,
+                    },
                 ],
                 "confidence": 0.92,
-                "pattern_id": "test-pattern-123"
+                "pattern_id": "test-pattern-123",
             }
-        return {
-            "form_type": "unknown",
-            "fields": [],
-            "confidence": 0.3
-        }
+        return {"form_type": "unknown", "fields": [], "confidence": 0.3}
 
 
 class TestCPMSPatternDetection(unittest.TestCase):
@@ -114,7 +110,6 @@ class TestCPMSPatternDetection(unittest.TestCase):
         self.assertEqual(result["form_type"], "login")
         self.assertEqual(len(result["fields"]), 3)
         # pattern_id is optional - only present if CPMS API provides it
-        # (Currently published CPMS client doesn't have detect_form, so we use fallback)
         
         # Check field types
         field_types = [f["type"] for f in result["fields"]]
@@ -153,6 +148,56 @@ class TestCPMSPatternDetection(unittest.TestCase):
             self.assertGreater(len(result["fields"]), 0)
         finally:
             os.unlink(screenshot_path)
+
+
+class FakeCpmsClientDetectFormCapture(FakeCpmsClient):
+    """Fake CPMS client that captures detect_form() args for assertions."""
+
+    def __init__(self):
+        super().__init__()
+        self.detect_calls = []
+
+    def detect_form(self, html, screenshot_path=None, screenshot=None, url=None, dom_snapshot=None, observation=None):
+        self.detect_calls.append(
+            {
+                "html": html,
+                "screenshot_path": screenshot_path,
+                "screenshot": screenshot,
+                "url": url,
+                "dom_snapshot": dom_snapshot,
+                "observation": observation,
+            }
+        )
+        # Return a "non-normalized" response shape to exercise normalization logic.
+        return {
+            "form_type": "login",
+            "detected_fields": [{"field_type": "email", "css_selector": "input[type='email']", "confidence": 0.9}],
+            "confidence": 0.85,
+            "pattern_id": "cap-1",
+        }
+
+
+class TestCPMSDetectFormIntegration(unittest.TestCase):
+    def test_detect_form_calls_client_detect_form_and_normalizes(self):
+        client = FakeCpmsClientDetectFormCapture()
+        adapter = CPMSAdapter(client)
+
+        # HTML without "email"/"password" so fallback would NOT detect login.
+        html = "<html><body><form><div>hi</div></form></body></html>"
+        result = adapter.detect_form_pattern(html, url="https://example.com", dom_snapshot={"k": "v"})
+
+        self.assertEqual(result["form_type"], "login")
+        self.assertEqual(result["pattern_id"], "cap-1")
+        self.assertEqual(len(result["fields"]), 1)
+        self.assertEqual(result["fields"][0]["type"], "email")
+        self.assertEqual(result["fields"][0]["selector"], "input[type='email']")
+
+        self.assertEqual(len(client.detect_calls), 1)
+        call = client.detect_calls[0]
+        self.assertEqual(call["html"], html)
+        self.assertEqual(call["url"], "https://example.com")
+        self.assertEqual(call["dom_snapshot"], {"k": "v"})
+
     
     def test_build_observation(self):
         """Test observation building"""

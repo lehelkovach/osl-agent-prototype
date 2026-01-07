@@ -23,6 +23,16 @@ def _load_env():
     load_dotenv()
 
 
+def _is_placeholder(val: str) -> bool:
+    """
+    Treat redacted placeholder values (used in cloud workspaces) as unset.
+    """
+    if not val:
+        return False
+    lowered = val.strip().lower()
+    return "__redact" in lowered or lowered.startswith("redacted")
+
+
 def _resolve_verify(env_val: str):
     if not env_val:
         return True
@@ -41,7 +51,7 @@ def _compute_arango_status():
 
     _load_env()
     required = [os.getenv("ARANGO_URL"), os.getenv("ARANGO_USER"), os.getenv("ARANGO_PASSWORD")]
-    if not all(required):
+    if not all(required) or any(_is_placeholder(v or "") for v in required):
         _arango_status = {"state": "skip", "reason": "Arango env not set"}
         return _arango_status
 
@@ -95,8 +105,11 @@ def _compute_openai_status():
         return _openai_status
 
     _load_env()
+    if os.getenv("USE_FAKE_OPENAI") == "1":
+        _openai_status = {"state": "skip", "reason": "USE_FAKE_OPENAI=1"}
+        return _openai_status
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    if not api_key or _is_placeholder(api_key):
         _openai_status = {"state": "skip", "reason": "OPENAI_API_KEY not set"}
         return _openai_status
 

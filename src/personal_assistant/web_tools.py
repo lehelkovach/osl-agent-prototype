@@ -32,6 +32,12 @@ class PlaywrightWebTools(WebTools):
             finally:
                 browser.close()
 
+    def _try_screenshot(self, page) -> Optional[bytes]:
+        try:
+            return page.screenshot(full_page=True)
+        except Exception:
+            return None
+
     def get(self, url: str) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
@@ -58,9 +64,9 @@ class PlaywrightWebTools(WebTools):
     def screenshot(self, url: str) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
-            img_bytes = page.screenshot(full_page=True)
-            img_b64 = base64.b64encode(img_bytes).decode("ascii")
-            path = self._maybe_save(u, img_bytes, suffix="screenshot.png")
+            img_bytes = self._try_screenshot(page)
+            img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
+            path = self._maybe_save(u, img_bytes, suffix="screenshot.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "image_base64": img_b64, "path": path}
 
         return self._with_page(url, action)
@@ -69,9 +75,9 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             body = page.content()
-            img_bytes = page.screenshot(full_page=True)
-            img_b64 = base64.b64encode(img_bytes).decode("ascii")
-            path = self._maybe_save(u, img_bytes, suffix="dom.png")
+            img_bytes = self._try_screenshot(page)
+            img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
+            path = self._maybe_save(u, img_bytes, suffix="dom.png") if img_bytes else None
             return {
                 "status": response.status if response else 0,
                 "url": u,
@@ -112,8 +118,8 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.mouse.click(x, y)
-            img_bytes = page.screenshot(full_page=True)
-            path = self._maybe_save(u, img_bytes, suffix="click_xy.png")
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(u, img_bytes, suffix="click_xy.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "clicked": [x, y], "screenshot_path": path}
 
         return self._with_page(url, action)
@@ -122,8 +128,8 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.click(selector)
-            img_bytes = page.screenshot(full_page=True)
-            path = self._maybe_save(u, img_bytes, suffix="click_selector.png")
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(u, img_bytes, suffix="click_selector.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "selector": selector, "screenshot_path": path}
 
         return self._with_page(url, action)
@@ -132,8 +138,8 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.click(f"xpath={xpath}")
-            img_bytes = page.screenshot(full_page=True)
-            path = self._maybe_save(u, img_bytes, suffix="click_xpath.png")
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(u, img_bytes, suffix="click_xpath.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "xpath": xpath, "screenshot_path": path}
 
         return self._with_page(url, action)
@@ -142,8 +148,8 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.fill(selector, text)
-            img_bytes = page.screenshot(full_page=True)
-            path = self._maybe_save(u, img_bytes, suffix="fill.png")
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(u, img_bytes, suffix="fill.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "selector": selector, "text": text, "screenshot_path": path}
 
         return self._with_page(url, action)
@@ -152,8 +158,8 @@ class PlaywrightWebTools(WebTools):
         def action(page, u):
             response = page.goto(u)
             page.wait_for_selector(selector, timeout=timeout_ms)
-            img_bytes = page.screenshot(full_page=True)
-            path = self._maybe_save(u, img_bytes, suffix="wait_for.png")
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(u, img_bytes, suffix="wait_for.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "selector": selector, "screenshot_path": path}
 
         return self._with_page(url, action)
