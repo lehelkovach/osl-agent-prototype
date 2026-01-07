@@ -64,12 +64,12 @@ class TestCPMSAdapter(unittest.TestCase):
 
 
 class FakeCpmsClientWithPatterns(FakeCpmsClient):
-    """Extended fake client that supports pattern detection"""
+    """Extended fake client that supports pattern detection via detect_form() method (cpms-client v0.1.2+)"""
     
-    def match_pattern(self, html=None, screenshot_path=None, observation=None):
-        """Mock CPMS pattern matching"""
+    def detect_form(self, html=None, screenshot_path=None, url=None, dom_snapshot=None):
+        """Mock CPMS form detection (matches cpms-client v0.1.2+ API)"""
         # Simple detection logic for testing
-        if "email" in html.lower() or "password" in html.lower():
+        if html and ("email" in html.lower() or "password" in html.lower()):
             return {
                 "form_type": "login",
                 "fields": [
