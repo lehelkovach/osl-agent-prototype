@@ -753,7 +753,9 @@ def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, lo
     except Exception:
         pass
     # #endregion
-    uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
+    # When debug=True, uvicorn requires app as import string for reload, but we can't use reload in this context
+    # So we disable reload even in debug mode
+    uvicorn.run(app, host=host, port=port, reload=False, access_log=not debug, log_level=log_level, log_config=None)
 
 
 def main():
