@@ -20,45 +20,31 @@ Write-Host "Starting agent daemon on ${DAEMON_HOST}:${DAEMON_PORT}"
 Write-Host "Logging to ${LOGFILE}"
 Write-Host "Command: poetry run python -m src.personal_assistant.service $($args -join ' ')"
 
-# Start the process in the background using Start-Process for better output handling
-$processInfo = New-Object System.Diagnostics.ProcessStartInfo
-$processInfo.FileName = "poetry"
-$processInfo.Arguments = "run python -m src.personal_assistant.service $($args -join ' ')"
-$processInfo.WorkingDirectory = $PWD
-$processInfo.UseShellExecute = $false
-$processInfo.RedirectStandardOutput = $true
-$processInfo.RedirectStandardError = $true
-$processInfo.CreateNoWindow = $true
-
-# Set environment variables
-$processInfo.EnvironmentVariables["PYTHONUNBUFFERED"] = "1"
-if ($env:USE_FAKE_OPENAI) { $processInfo.EnvironmentVariables["USE_FAKE_OPENAI"] = $env:USE_FAKE_OPENAI }
-if ($env:EMBEDDING_BACKEND) { $processInfo.EnvironmentVariables["EMBEDDING_BACKEND"] = $env:EMBEDDING_BACKEND }
-if ($env:DEBUG) { $processInfo.EnvironmentVariables["DEBUG"] = $env:DEBUG }
-if ($env:ARANGO_URL) { $processInfo.EnvironmentVariables["ARANGO_URL"] = $env:ARANGO_URL }
-if ($env:HOST) { $processInfo.EnvironmentVariables["HOST"] = $env:HOST }
-if ($env:PORT) { $processInfo.EnvironmentVariables["PORT"] = $env:PORT }
-
-$process = New-Object System.Diagnostics.Process
-$process.StartInfo = $processInfo
-
-# Redirect output to log file
-$process.add_OutputDataReceived({
-    param($sender, $e)
-    if ($e.Data) {
-        Add-Content -Path $LOGFILE -Value $e.Data -Encoding utf8
+# Create a script block that redirects both stdout and stderr to the log file
+$scriptBlock = {
+    param($argsList, $logPath, $workingDir, $envVars)
+    Set-Location $workingDir
+    foreach ($key in $envVars.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $envVars[$key], "Process")
     }
-})
-$process.add_ErrorDataReceived({
-    param($sender, $e)
-    if ($e.Data) {
-        Add-Content -Path $LOGFILE -Value $e.Data -Encoding utf8
-    }
-})
+    $env:PYTHONUNBUFFERED = "1"
+    
+    & poetry run python -m src.personal_assistant.service @argsList *>&1 | Tee-Object -FilePath $logPath -Append
+}
 
-$process.Start() | Out-Null
-$process.BeginOutputReadLine()
-$process.BeginErrorReadLine()
+# Prepare environment variables
+$envVars = @{
+    "PYTHONUNBUFFERED" = "1"
+}
+if ($env:USE_FAKE_OPENAI) { $envVars["USE_FAKE_OPENAI"] = $env:USE_FAKE_OPENAI }
+if ($env:EMBEDDING_BACKEND) { $envVars["EMBEDDING_BACKEND"] = $env:EMBEDDING_BACKEND }
+if ($env:DEBUG) { $envVars["DEBUG"] = $env:DEBUG }
+if ($env:ARANGO_URL) { $envVars["ARANGO_URL"] = $env:ARANGO_URL }
+if ($env:HOST) { $envVars["HOST"] = $env:HOST }
+if ($env:PORT) { $envVars["PORT"] = $env:PORT }
+
+# Start the process in a background job
+$job = Start-Job -ScriptBlock $scriptBlock -ArgumentList (,$args), $LOGFILE, $PWD, $envVars
 
 # Save job ID to file
 $jobId = $job.Id
