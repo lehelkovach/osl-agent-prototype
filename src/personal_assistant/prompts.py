@@ -18,7 +18,7 @@ Ontology awareness (lightweight KnowShowGo):
 - Emit plans as strict JSON (no prose, no Markdown). Top-level shape:
   {"commandtype": "procedure", "metadata": {"steps": [<step>, <step>, ...]}}
 - Each step: {"commandtype": "<tool_name>", "metadata": {...}, "comment": "<optional why/how>"}
-- Supported tool_name values: web.get_dom, web.screenshot, web.locate_bounding_box, web.fill, web.click_selector, web.click_xpath, web.click_xy, web.wait_for, web.get, web.post, tasks.create, calendar.create_event, contacts.create, memory.remember, form.autofill, procedure.create, procedure.search, queue.enqueue, queue.update.
+- Supported tool_name values: web.get_dom, web.screenshot, web.locate_bounding_box, web.fill, web.click_selector, web.click_xpath, web.click_xy, web.wait_for, web.get, web.post, tasks.create, calendar.create_event, contacts.create, memory.remember, form.autofill, procedure.create, procedure.search, queue.enqueue, queue.update, vision.parse_screenshot, message.detect_messages, message.get_details, message.compose_response, message.send_response.
 - Ontology tools: ksg.create_prototype(name, description, context, labels?, embedding?, base_prototype_uuid?) and ksg.create_concept(prototype_uuid, json_obj, embedding?, provenance?, previous_version_uuid?). Prefer reusing existing prototypes; search memory/KnowShowGo for matching prototype kinds (e.g., Person, Procedure, Credential). If missing, emit a ksg.create_prototype step before creating the concept.
 - Before asking the user how to do something, ALWAYS search KnowShowGo for similar concepts using ksg.search_concepts(query, top_k?). If a similar concept is found (e.g., "logging into X" when asked to "log into Y"), reuse it with adaptations. Only ask the user if no similar concept exists or confidence is low.
 - Recursive concept creation: Use ksg.create_concept_recursive(prototype_uuid, json_obj, embedding) to create concepts with nested structures (e.g., Procedure DAGs containing sub-procedures). The json_obj can contain nested arrays (steps, children, sub_procedures) where each item can reference its own prototype_uuid to create child concepts recursively.
@@ -58,7 +58,12 @@ Tool catalog (choose minimal set):
 - memory.search(...) / memory.upsert(...)
 - memory.remember(text, kind?, labels?, props?)  # store a fact/procedure/concept with embedding
 - web.get(url), web.post(url, payload), web.screenshot(url), web.get_dom(url)  # primitive commandlets for HTTP/DOM/screenshot
-- web.locate_bounding_box(url, query)  # vision-assisted lookup of element bounding boxes
+- web.locate_bounding_box(url, query)  # vision-assisted lookup of element bounding boxes (uses vision models if USE_VISION_FOR_LOCATION=1)
+- vision.parse_screenshot(screenshot_path, query, url?)  # parse screenshot using GPT-4 Vision/Claude Vision/Gemini Vision to locate elements by description
+- message.detect_messages(url, filters?)  # detect new messages in email inbox (filters: unread, from, etc.)
+- message.get_details(url, message_id?, selector?)  # get details of a specific message
+- message.compose_response(message, template?, custom_text?)  # compose autoresponse to a message
+- message.send_response(url, response, message?)  # send an autoresponse
 - web.click_selector(url, selector) / web.click_xpath(url, xpath) / web.click_xy(url, x, y)
 - queue.update(items[])  # reorder/prioritize task queue items (uuid, priority, due, status)
 - queue.enqueue(title, priority?, due?, status?, not_before?/delay_seconds?, labels?, kind?, props?)  # push onto priority queue with optional delay

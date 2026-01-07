@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Dynamic Login Form Generator</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .form-container {
+      border: 2px solid #ccc;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 8px;
+    }
+    .status {
+      margin-top: 20px;
+      padding: 10px;
+      border-radius: 4px;
+    }
+    .status.success {
+      background-color: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    .status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+    .status.info {
+      background-color: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+  </style>
+</head>
+<body>
+  <h1>Dynamic Login Form Generator</h1>
+  <p>This form is generated deterministically based on the <code>page</code> or <code>seed</code> query parameter.</p>
+  <p>Current seed: <strong id="seed-display">-</strong></p>
+  
+  <div class="form-container" id="form-container">
+    <!-- Form will be generated here -->
+  </div>
+  
+  <div id="status" class="status info" style="display:none;"></div>
+
+  <script>
+    // Seeded random number generator (same seed = same sequence)
+    class SeededRandom {
+      constructor(seed) {
+        this.seed = seed;
+      }
+      
+      next() {
+        this.seed = (this.seed * 9301 + 49297) % 233280;
+        return this.seed / 233280;
+      }
+      
+      random() {
+        return this.next();
+      }
+      
+      randint(min, max) {
+        return Math.floor(this.random() * (max - min + 1)) + min;
+      }
+      
+      choice(arr) {
+        return arr[Math.floor(this.random() * arr.length)];
+      }
+      
+      shuffle(arr) {
+        const result = [...arr];
+        for (let i = result.length - 1; i > 0; i--) {
+          const j = Math.floor(this.random() * (i + 1));
+          [result[i], result[j]] = [result[j], result[i]];
+        }
+        return result;
+      }
+    }
+
+    // Get seed from URL query params
+    function getSeedFromURL() {
+      const params = new URLSearchParams(window.location.search);
+      const seed = params.get('seed') || params.get('page') || '1';
+      return parseInt(seed) || 1;
+    }
+
+    // Generate random field based on seed
+    function randField(rng, base, variants) {
+      const name = rng.choice(variants);
+      const idNum = rng.randint(100, 999);
+      return {
+        id: `${name}-${idNum}`,
+        name: name,
+        placeholder: rng.choice([name, name.charAt(0).toUpperCase() + name.slice(1), base]),
+        type: base === 'email' ? 'email' : (base === 'password' ? 'password' : 'text'),
+        required: rng.random() > 0.3, // 70% chance of required
+      };
+    }
+
+    // Generate form HTML
+    function generateForm() {
+      const seed = getSeedFromURL();
+      document.getElementById('seed-display').textContent = seed;
+      
+      const rng = new SeededRandom(seed);
+      const container = document.getElementById('form-container');
+      
+      // Generate email/username field variants
+      const emailField = randField(rng, 'email', ['email', 'user', 'username', 'usr', 'user_email']);
+      const passwordField = randField(rng, 'password', ['password', 'pass', 'pwd', 'passwd']);
+      
+      // Randomize field order
+      const fields = rng.shuffle([emailField, passwordField]);
+      
+      // Generate random positions/sizes
+      const positions = ['left', 'center', 'right'];
+      const sizes = ['small', 'medium', 'large'];
+      const orientations = ['vertical', 'horizontal'];
+      
+      const position = rng.choice(positions);
+      const size = rng.choice(sizes);
+      const orientation = rng.choice(orientations);
+      
+      // Generate CSS styles
+      const fieldWidth = size === 'small' ? '200px' : (size === 'medium' ? '300px' : '400px');
+      const fieldHeight = size === 'small' ? '30px' : (size === 'medium' ? '35px' : '40px');
+      const fieldMargin = rng.randint(5, 20);
+      const formAlign = position === 'left' ? 'flex-start' : (position === 'center' ? 'center' : 'flex-end');
+      
+      // Build form HTML
+      let formHTML = `
+        <form id="login-form" style="display: flex; flex-direction: ${orientation === 'vertical' ? 'column' : 'row'}; align-items: ${formAlign}; gap: ${fieldMargin}px;">
+      `;
+      
+      fields.forEach(field => {
+        const inputStyle = `
+          width: ${fieldWidth};
+          height: ${fieldHeight};
+          padding: ${rng.randint(5, 15)}px;
+          font-size: ${rng.choice(['14px', '16px', '18px'])};
+          border: ${rng.randint(1, 3)}px solid #ccc;
+          border-radius: ${rng.randint(0, 8)}px;
+          margin: ${rng.randint(0, 10)}px;
+        `;
+        
+        formHTML += `
+          <div style="display: flex; flex-direction: column;">
+            ${field.required ? '<label style="color: red;">*</label>' : ''}
+            <input 
+              type="${field.type}" 
+              id="${field.id}" 
+              name="${field.name}" 
+              placeholder="${field.placeholder}"
+              ${field.required ? 'required' : ''}
+              style="${inputStyle}"
+            />
+          </div>
+        `;
+      });
+      
+      // Generate submit button
+      const buttonTexts = ['Login', 'Sign In', 'Submit', 'Log In', 'Enter'];
+      const buttonText = rng.choice(buttonTexts);
+      const buttonId = `submit-${rng.randint(100, 999)}`;
+      const buttonStyle = `
+        width: ${rng.choice(['150px', '200px', '250px'])};
+        height: ${rng.choice(['35px', '40px', '45px'])};
+        font-size: ${rng.choice(['14px', '16px', '18px'])};
+        background-color: ${rng.choice(['#007bff', '#28a745', '#dc3545', '#ffc107'])};
+        color: white;
+        border: none;
+        border-radius: ${rng.randint(4, 12)}px;
+        cursor: pointer;
+        margin-top: ${orientation === 'vertical' ? '10px' : '0'};
+      `;
+      
+      formHTML += `
+          <button 
+            type="submit" 
+            id="${buttonId}"
+            style="${buttonStyle}"
+          >${buttonText}</button>
+        </form>
+      `;
+      
+      container.innerHTML = formHTML;
+      
+      // Add form validation and submission handler
+      const form = document.getElementById('login-form');
+      const statusDiv = document.getElementById('status');
+      
+      form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        statusDiv.style.display = 'none';
+        
+        // Validate all required fields
+        const inputs = form.querySelectorAll('input[required]');
+        let allValid = true;
+        const values = {};
+        
+        inputs.forEach(input => {
+          if (!input.value || input.value.trim() === '') {
+            allValid = false;
+            input.style.borderColor = 'red';
+          } else {
+            input.style.borderColor = '#28a745';
+            values[input.name] = input.value;
+          }
+        });
+        
+        // Type-specific validation
+        const emailInput = form.querySelector('input[type="email"]');
+        if (emailInput && emailInput.value) {
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(emailInput.value)) {
+            allValid = false;
+            emailInput.style.borderColor = 'red';
+          }
+        }
+        
+        if (allValid && Object.keys(values).length >= 2) {
+          statusDiv.className = 'status success';
+          statusDiv.textContent = `✓ Login successful! Form submitted with ${Object.keys(values).length} fields filled.`;
+          statusDiv.style.display = 'block';
+          
+          // Reset form after success
+          setTimeout(() => {
+            form.reset();
+            inputs.forEach(input => input.style.borderColor = '#ccc');
+            statusDiv.style.display = 'none';
+          }, 3000);
+        } else {
+          statusDiv.className = 'status error';
+          statusDiv.textContent = '✗ Please fill in all required fields correctly. Email must be valid format.';
+          statusDiv.style.display = 'block';
+        }
+      });
+      
+      // Reset border colors on input
+      form.querySelectorAll('input').forEach(input => {
+        input.addEventListener('input', function() {
+          this.style.borderColor = '#ccc';
+        });
+      });
+    }
+
+    // Generate form on page load
+    generateForm();
+    
+    // Regenerate if URL changes
+    window.addEventListener('popstate', generateForm);
+  </script>
+</body>
+</html>
+

@@ -36,6 +36,8 @@ class PersonalAssistantAgent:
         event_bus: Optional[EventBus] = None,
         use_cpms_for_procs: Optional[bool] = None,
         ksg: Optional[KnowShowGoAPI] = None,
+        vision: Optional[Any] = None,
+        messages: Optional[Any] = None,
     ):
         self.memory = memory
         self.calendar = calendar
@@ -45,6 +47,8 @@ class PersonalAssistantAgent:
         self.shell = shell
         self.cpms = cpms
         self.procedure_builder = procedure_builder
+        self.vision = vision
+        self.messages = messages
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
         # Support both old OpenAIClient and new LLMClient interface
@@ -103,8 +107,24 @@ class PersonalAssistantAgent:
             trace_id=provenance.trace_id,
         )
         # Procedure reuse (embedding-aware)
+        # #region agent log
+        import json
+        import time
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:106", "message": "searching for procedures", "data": {"query": user_request[:100], "has_procedure_builder": self.procedure_builder is not None}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-recall", "hypothesisId": "D"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if self.procedure_builder:
             proc_matches = self.procedure_builder.search_procedures(user_request, top_k=3)
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:109", "message": "procedure search results", "data": {"matches_count": len(proc_matches), "match_titles": [m.get("title", "unknown")[:50] for m in proc_matches[:3]]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-recall", "hypothesisId": "D"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self._last_procedure_matches = proc_matches
             memory_results.extend(proc_matches)
             self._emit(
@@ -313,6 +333,13 @@ class PersonalAssistantAgent:
         # 4. Execute via Tools
         execution_results = self._execute_plan(plan, provenance)
         if execution_results.get("status") == "error":
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:316", "message": "execution failed, attempting adaptation", "data": {"error": str(execution_results.get("error", ""))[:200], "trace_id": provenance.trace_id}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # Single adaptation attempt: ask LLM to adjust based on the error context.
             err = execution_results.get("error", "")
             adapt_request = f"{user_request}\nPrevious plan failed with error: {err}. Adjust selectors/URLs/values and try again."
@@ -327,6 +354,13 @@ class PersonalAssistantAgent:
             )
             plan["adapted"] = True
             plan["raw_llm"] = raw_llm or plan.get("raw_llm")
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:329", "message": "adapted plan generated", "data": {"steps_count": len(plan.get("steps", [])), "has_procedure_create": any(s.get("tool") == "procedure.create" for s in plan.get("steps", []))}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self._emit(
                 "plan_ready",
                 {
@@ -824,6 +858,13 @@ class PersonalAssistantAgent:
                     else:
                         res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
                 elif tool_name == "procedure.create":
+                    # #region agent log
+                    try:
+                        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps({"location": "agent.py:827", "message": "procedure.create called", "data": {"title": params.get("title") or params.get("name", "unknown")[:50], "steps_count": len(params.get("steps", [])), "use_cpms": self.use_cpms_for_procs}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-create", "hypothesisId": "E"}) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
                     if self.use_cpms_for_procs and self.cpms:
                         res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
                     elif self.procedure_builder:
@@ -843,9 +884,24 @@ class PersonalAssistantAgent:
                                     }
                                 )
                             norm_params["steps"] = norm_steps
+                        # #region agent log
+                        try:
+                            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                                f.write(json.dumps({"location": "agent.py:848", "message": "creating procedure via ProcedureBuilder", "data": {"title": norm_params.get("title", "unknown")[:50]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-create", "hypothesisId": "E"}) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
+                        procedure_result = self.procedure_builder.create_procedure(**norm_params)
+                        # #region agent log
+                        try:
+                            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                                f.write(json.dumps({"location": "agent.py:850", "message": "procedure created successfully", "data": {"procedure_uuid": procedure_result.get("procedure_uuid"), "steps_count": len(procedure_result.get("step_uuids", []))}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-create", "hypothesisId": "E"}) + "\n")
+                        except Exception:
+                            pass
+                        # #endregion
                         res = {
                             "status": "success",
-                            "procedure": self.procedure_builder.create_procedure(**norm_params),
+                            "procedure": procedure_result,
                         }
                     else:
                         res = {"status": "error", "error": "ProcedureBuilder not configured"}
@@ -928,6 +984,45 @@ class PersonalAssistantAgent:
                             res = {"status": "success", "pattern": pattern_data}
                         except Exception as exc:
                             res = {"status": "error", "error": str(exc)}
+                elif tool_name == "vision.parse_screenshot" and self.vision:
+                    try:
+                        screenshot_path = params.get("screenshot_path") or params.get("screenshot")
+                        query = params.get("query") or params.get("element")
+                        url = params.get("url")
+                        res = self.vision.parse_screenshot(screenshot_path, query, url)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.detect_messages" and self.messages:
+                    try:
+                        url = params.get("url")
+                        filters = params.get("filters")
+                        res = self.messages.detect_messages(url, filters)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.get_details" and self.messages:
+                    try:
+                        url = params.get("url")
+                        message_id = params.get("message_id")
+                        selector = params.get("selector")
+                        res = self.messages.get_message_details(url, message_id, selector)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.compose_response" and self.messages:
+                    try:
+                        message = params.get("message")
+                        template = params.get("template")
+                        custom_text = params.get("custom_text")
+                        res = self.messages.compose_response(message, template, custom_text)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.send_response" and self.messages:
+                    try:
+                        url = params.get("url")
+                        response = params.get("response")
+                        message = params.get("message")
+                        res = self.messages.send_response(url, response, message)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
                 elif tool_name == "dag.execute":
                     try:
                         concept_uuid = params.get("concept_uuid")
@@ -1790,6 +1885,15 @@ class PersonalAssistantAgent:
 
     def _log_message(self, role: str, content: str, provenance: Provenance) -> None:
         """Persist conversation messages with embeddings into history."""
+        # #region agent log
+        import json
+        import time
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:1794", "message": "_log_message entry", "data": {"role": role, "content_len": len(content) if content else 0, "trace_id": provenance.trace_id}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if not content:
             return
         msg_node = Node(
@@ -1797,14 +1901,42 @@ class PersonalAssistantAgent:
             labels=["history", role],
             props={"role": role, "content": content, "ts": provenance.ts},
         )
+        # #region agent log
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:1801", "message": "generating embedding for message", "data": {"node_uuid": msg_node.uuid, "kind": msg_node.kind, "labels": msg_node.labels}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         msg_node.llm_embedding = self._embed_text(content)
+        # #region agent log
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:1804", "message": "embedding generated, upserting to memory", "data": {"embedding_len": len(msg_node.llm_embedding) if msg_node.llm_embedding else 0}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         try:
             self.memory.upsert(msg_node, provenance, embedding_request=True)
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:1807", "message": "message upserted to memory successfully", "data": {"node_uuid": msg_node.uuid, "memory_backend": type(self.memory).__name__}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self._emit(
                 "message_logged",
                 {"role": role, "content": content, "trace_id": provenance.trace_id, "ts": provenance.ts},
             )
-        except Exception:
+        except Exception as e:
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:1814", "message": "message upsert failed", "data": {"error": str(e)[:200]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # Do not fail the agent loop on logging errors
             pass
 

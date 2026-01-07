@@ -406,14 +406,44 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
 
     @app.post("/chat")
     def chat(body: ChatRequest):
+        # #region agent log
+        import json
+        import time
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "service.py:410", "message": "chat endpoint entry", "data": {"message": body.message[:100]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         events: List[dict] = []
         bus = EventCollectorBus(events)
         agent.event_bus = bus
         log = get_logger("chat")
         log.info("chat_request", message=body.message)
         try:
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "service.py:420", "message": "calling agent.execute_request", "data": {"message_len": len(body.message)}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             result = agent.execute_request(body.message)
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "service.py:423", "message": "agent.execute_request completed", "data": {"has_plan": "plan" in result, "execution_status": result.get("execution_results", {}).get("status") if isinstance(result.get("execution_results"), dict) else "unknown"}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
         except Exception as exc:
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "service.py:426", "message": "chat endpoint error", "data": {"error": str(exc)[:200]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             log.error("chat_error", error=str(exc), exc_info=True)
             chat_history.append({"role": "user", "content": body.message})
             chat_history.append({"role": "assistant", "content": "Error handling request."})
@@ -431,6 +461,13 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         trace_id = result["plan"].get("trace_id") or result["execution_results"].get("trace_id") if isinstance(result["execution_results"], dict) else None
         if trace_id:
             runs[trace_id] = {"events": events, "plan": result["plan"], "results": result["execution_results"]}
+        # #region agent log
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "service.py:441", "message": "chat endpoint exit", "data": {"trace_id": trace_id, "events_count": len(events)}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         return {"plan": result["plan"], "results": result["execution_results"], "events": events}
 
     @app.get("/history", response_class=JSONResponse)
@@ -587,6 +624,27 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
             cpms_adapter = CPMSAdapter.from_env()
         except CPMSNotInstalled:
             cpms_adapter = None
+    
+    # Initialize vision tools (optional, requires vision-capable LLM)
+    vision_tools = None
+    if openai_client:
+        try:
+            from src.personal_assistant.vision_tools import VisionLLMTools
+            vision_tools = VisionLLMTools(openai_client)
+        except Exception as exc:
+            log.warning("vision_tools_init_failed", error=str(exc))
+            vision_tools = None
+    
+    # Initialize message tools (requires web tools)
+    message_tools = None
+    if web_tools:
+        try:
+            from src.personal_assistant.message_tools import WebMessageTools
+            message_tools = WebMessageTools(web_tools)
+        except Exception as exc:
+            log.warning("message_tools_init_failed", error=str(exc))
+            message_tools = None
+    
     agent = PersonalAssistantAgent(
         memory,
         calendar,
@@ -597,6 +655,8 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
         procedure_builder=procedure_builder,
         cpms=cpms_adapter,
         openai_client=openai_client,
+        vision=vision_tools,
+        messages=message_tools,
     )
     
     return agent
@@ -604,10 +664,40 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
 
 def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, log_level: str = "info", config_path: str | None = None):
     """Programmatic entrypoint used by scripts."""
+    # #region agent log
+    import json
+    import time
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:607", "message": "run_service entry", "data": {"host": host, "port": port, "debug": debug, "log_level": log_level}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     configure_logging()
     log = get_logger("service")
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:612", "message": "loading config", "data": {"config_path": config_path}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     cfg = load_config(config_path)
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:615", "message": "creating agent", "data": {"cfg_keys": list(cfg.keys()) if cfg else []}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     agent = default_agent_from_env(cfg)
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:618", "message": "building app", "data": {"agent_type": type(agent).__name__}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     app = build_app(agent)
     log.info(
         "starting_service",
@@ -617,6 +707,13 @@ def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, lo
         log_level=log_level,
         config_path=config_path,
     )
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:632", "message": "starting uvicorn", "data": {"host": host, "port": port}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
 
 
