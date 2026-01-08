@@ -2,6 +2,9 @@
 
 Lightweight personal assistant agent that plans with OpenAI, executes tool calls (tasks, calendar, contacts, web, shell), and persists semantic memory in ChromaDB or ArangoDB with a small KnowShowGo (KSG) ontology.
 
+## Note (Repo Direction)
+This repository will contain the separated **KnowShowGo / ArangoDB service** extracted from `lehelkovach/osl-agent-prototype` (see the `knowshowgo-update` branch).
+
 ## Purpose & Goals
 - Run a loop that classifies intent, searches semantic memory, plans with an LLM, executes tool calls, and writes back results.
 - Keep knowledge in a graph + embeddings store (Arango/Chroma) with seeded prototypes (Task, Event, DAG, List, Tag, etc.) for reuse and RAG.
