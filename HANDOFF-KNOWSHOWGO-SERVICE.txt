@@ -1,0 +1,153 @@
+Handoff: KnowShowGo Service + Client (separate repo)
+===================================================
+
+Context
+-------
+We attempted to create a new standalone KnowShowGo service repo (`lehelkovach/knowshowgo-service`)
+and push an initial FastAPI service + Python client + tests from the Cursor cloud agent environment.
+
+Blockers encountered (cloud agent)
+---------------------------------
+1) Push denied to both:
+   - lehelkovach/knowshowgo
+   - lehelkovach/knowshowgo-service
+   Error: 403 “Permission ... denied to cursor[bot]”
+
+2) Forking & repo creation are blocked for this integration:
+   - gh repo fork: 403 “Resource not accessible by integration”
+   - gh repo create: “Resource not accessible by integration (createRepository)”
+
+Therefore: do the repo creation / pushing from a local environment using your own GitHub credentials.
+
+
+Goal
+----
+Create a standalone "KnowShowGo / ArangoDB service" project in `lehelkovach/knowshowgo-service`
+with:
+  - A minimal FastAPI REST API (service)
+  - A small Python client library (REST client)
+  - Tests (contract tests against in-process FastAPI + optional integration tests)
+
+Keep `osl-agent-prototype/main` intact for now; integrate later behind a feature flag.
+
+
+Recommended approach (incremental, low-risk)
+--------------------------------------------
+Phase A (service skeleton, no Arango required)
+1) Create a fresh Python project structure in `knowshowgo-service`:
+
+   knowshowgo_service/
+     __init__.py
+     api.py              # FastAPI app + routes
+     models.py           # Pydantic models for requests/responses
+     store.py            # Store interface + InMemoryStore
+     settings.py         # env config (optional)
+
+   knowshowgo_client/
+     __init__.py
+     client.py           # httpx-based client mirroring server routes
+     models.py           # shared or duplicated pydantic models (choose one approach)
+
+   tests/
+     test_contract_nodes.py
+     test_contract_search.py
+     test_contract_edges.py
+     test_client_roundtrip.py
+
+   pyproject.toml (or requirements.txt)
+   README.md
+
+2) Define a minimal API surface that mirrors what `osl-agent-prototype` needs first.
+   Start small and stable; add more endpoints once the client/server are working.
+
+   Minimal endpoints to start:
+   - GET  /health
+   - POST /v1/nodes/upsert
+   - POST /v1/edges/upsert
+   - POST /v1/search
+   - GET  /v1/nodes/{uuid}
+   - GET  /v1/edges?from_uuid=...&rel=... (optional, but useful)
+
+   Keep payloads simple:
+   - Node: { uuid?, kind, labels[], props{}, embedding?[] }
+   - Edge: { uuid?, from_node, to_node, rel, props{} }
+   - Search: { query, top_k=5, filters?{}, query_embedding?[] }
+
+3) Implement a `Store` interface:
+   - upsert_node(node) -> uuid
+   - upsert_edge(edge) -> uuid
+   - get_node(uuid) -> node|None
+   - search(query, top_k, filters, query_embedding) -> list[dict]
+   - list_edges(from_uuid?, rel?) -> list[edge]
+
+   Provide `InMemoryStore` first:
+   - Use dicts keyed by uuid
+   - For `search`, do a naive similarity scoring if `query_embedding` provided; otherwise do label/props substring match.
+   This keeps tests deterministic and unblocks client/service wiring.
+
+4) Build tests:
+   - Use FastAPI TestClient to hit endpoints without running a real server.
+   - Add roundtrip test using the Python client against TestClient (mount ASGI via httpx’s ASGITransport)
+
+   Tests should cover:
+   - Node upsert + get
+   - Edge upsert + list/get
+   - Search returns expected ordering and filters
+   - Client methods match server outputs and error handling
+
+Phase B (Arango-backed store behind flag)
+5) Add an Arango-backed store later:
+   - `ArangoStore(Store)` using python-arango
+   - Env vars: ARANGO_URL, ARANGO_DB, ARANGO_USER, ARANGO_PASSWORD, ARANGO_VERIFY
+   - Collections for nodes/edges, plus optional vector index strategy (defer if needed)
+   - Keep `InMemoryStore` as default for tests; gate Arango tests behind env (e.g., TEST_ARANGO=1)
+
+
+Integration plan into `osl-agent-prototype` (later, keep main stable)
+--------------------------------------------------------------------
+1) Don’t change `osl-agent-prototype/main` yet. Once service is stable:
+2) Add a feature flag and a new implementation that satisfies the same “KSG” interface:
+   - Local: existing `KnowShowGoAPI(memory, embed_fn=...)`
+   - Remote: `RemoteKnowShowGoClient(base_url, token?)`
+
+3) Minimal integration points:
+   - Replace direct `KnowShowGoAPI` construction with a factory that chooses local vs remote.
+   - Keep default = local to avoid regressions.
+
+4) Contract alignment:
+   - Ensure the remote API supports what the agent actually uses: create_prototype, create_concept,
+     create_concept_recursive, search_concepts, store_cpms_pattern, add_association, etc.
+   - Do NOT expose everything immediately—add endpoints only as needed, maintaining backward compatibility.
+
+
+Notes on PR `cursor/agent-local-vs-here-b8ca` (osl-agent-prototype)
+-------------------------------------------------------------------
+That PR contains both valuable CPMS/KSG improvements AND KnowShowGo extraction artifacts:
+  - knowshowgo.bundle (binary)
+  - knowshowgo as a gitlink/submodule pointer (mode 160000)
+
+Recommendation: do NOT merge that PR wholesale into `main`.
+If you want the improvements, cherry-pick/port the code changes only, excluding bundle/submodule.
+
+
+Local execution checklist (for your local agent)
+------------------------------------------------
+1) Clone repo:
+   git clone https://github.com/lehelkovach/knowshowgo-service
+   cd knowshowgo-service
+
+2) Create Python env (3.12 recommended), install deps:
+   pip install -U pip
+   pip install fastapi uvicorn[standard] pydantic httpx pytest
+   (optionally python-arango)
+
+3) Implement the structure above.
+
+4) Run tests:
+   pytest -q
+
+5) Run service:
+   uvicorn knowshowgo_service.api:app --reload
+
+6) Push to GitHub using your credentials.
+
