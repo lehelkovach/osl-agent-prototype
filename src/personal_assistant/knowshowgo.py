@@ -30,6 +30,38 @@ class KnowShowGoAPI:
         self.memory = memory
         self.embed_fn = embed_fn
         self.orm = KSGORM(memory)  # ORM for prototype-based object hydration
+    
+    def _normalize_result(self, result: Any) -> Dict[str, Any]:
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "__dict__"):
+            return result.__dict__
+        return {}
+
+    def _is_prototype(self, result: Dict[str, Any]) -> bool:
+        kind = result.get("kind")
+        if kind == "Prototype":
+            return True
+        props = result.get("props") or {}
+        return props.get("isPrototype") is True
+
+    def _find_prototype_uuid(self, name: str, top_k: int = 5) -> Optional[str]:
+        results = self.memory.search(name, top_k=top_k, filters={"kind": "topic"})
+        if not results:
+            results = self.memory.search(name, top_k=top_k)
+        candidates = []
+        for result in results:
+            normalized = self._normalize_result(result)
+            if self._is_prototype(normalized):
+                candidates.append(normalized)
+        if not candidates:
+            return None
+        for candidate in candidates:
+            labels = candidate.get("labels") or []
+            props = candidate.get("props") or {}
+            if name == props.get("label") or name == props.get("name") or name in labels:
+                return candidate.get("uuid")
+        return candidates[0].get("uuid")
 
     def create_prototype(
         self,
@@ -372,58 +404,44 @@ class KnowShowGoAPI:
             trace_id="knowshowgo-cpms",
         )
 
-        # Find or create Pattern prototype
-        pattern_proto = None
-        try:
-            proto_results = self.memory.search("Pattern", top_k=1, filters={"kind": "Prototype"})
-            if proto_results:
-                pattern_proto = proto_results[0]
-                if isinstance(pattern_proto, dict):
-                    pattern_proto_uuid = pattern_proto.get("uuid")
-                else:
-                    pattern_proto_uuid = getattr(pattern_proto, "uuid", None)
-            else:
-                # Create Pattern prototype if missing
-                pattern_proto = Node(
-                    kind="Prototype",
-                    labels=["Prototype", "Pattern"],
-                    props={"name": "Pattern", "description": "CPMS pattern signal", "context": "form_detection"},
-                    llm_embedding=embedding[:10] if len(embedding) > 10 else embedding,  # Simplified
-                )
-                self.memory.upsert(pattern_proto, prov, embedding_request=True)
-                pattern_proto_uuid = pattern_proto.uuid
-        except Exception:
-            pattern_proto_uuid = None
-
+        pattern_proto_uuid = self._find_prototype_uuid("Pattern")
         if not pattern_proto_uuid:
-            # Fallback: create as Concept directly
+            try:
+                pattern_proto_uuid = self.create_prototype(
+                    name="Pattern",
+                    description="CPMS pattern signal",
+                    context="form_detection",
+                    labels=["Pattern"],
+                    embedding=embedding[:10] if len(embedding) > 10 else embedding,
+                )
+            except Exception:
+                pattern_proto_uuid = None
+
+        if pattern_proto_uuid:
+            pattern_uuid = self.create_concept(
+                pattern_proto_uuid,
+                {"name": pattern_name, "pattern_data": pattern_data, "source": "cpms"},
+                embedding,
+                provenance=prov,
+            )
+        else:
             pattern_node = Node(
-                kind="Concept",
+                kind="topic",
                 labels=["Pattern", pattern_name],
-                props={"name": pattern_name, "pattern_data": pattern_data, "source": "cpms"},
+                props={
+                    "label": pattern_name,
+                    "aliases": ["Pattern"],
+                    "summary": "CPMS pattern signal",
+                    "isPrototype": False,
+                    "status": "active",
+                    "namespace": "public",
+                    "pattern_data": pattern_data,
+                    "source": "cpms",
+                },
                 llm_embedding=embedding,
             )
             self.memory.upsert(pattern_node, prov, embedding_request=True)
             pattern_uuid = pattern_node.uuid
-        else:
-            # Create concept linked to Pattern prototype
-            pattern_concept = Node(
-                kind="Concept",
-                labels=["Pattern", pattern_name],
-                props={"name": pattern_name, "pattern_data": pattern_data, "source": "cpms", "prototype_uuid": pattern_proto_uuid},
-                llm_embedding=embedding,
-            )
-            self.memory.upsert(pattern_concept, prov, embedding_request=True)
-            pattern_uuid = pattern_concept.uuid
-
-            # Link to prototype
-            inst_edge = Edge(
-                from_node=pattern_uuid,
-                to_node=pattern_proto_uuid,
-                rel="instantiates",
-                props={"prototype_uuid": pattern_proto_uuid},
-            )
-            self.memory.upsert(inst_edge, prov, embedding_request=False)
 
         # Link to parent concept if provided
         if concept_uuid:
@@ -460,10 +478,7 @@ class KnowShowGoAPI:
 
         # Find or use provided prototype
         if not prototype_uuid:
-            # Try to find Procedure or Concept prototype
-            proto_results = self.memory.search("Procedure", top_k=1, filters={"kind": "Prototype"})
-            if proto_results:
-                prototype_uuid = proto_results[0].get("uuid") if isinstance(proto_results[0], dict) else getattr(proto_results[0], "uuid", None)
+            prototype_uuid = self._find_prototype_uuid("Procedure")
 
         # Create generalized parent concept
         generalized_json = {
@@ -610,9 +625,7 @@ class KnowShowGoAPI:
         
         # Find or use Object prototype
         if not prototype_uuid:
-            proto_results = self.memory.search("Object", top_k=1, filters={"kind": "Prototype"})
-            if proto_results:
-                prototype_uuid = proto_results[0].get("uuid") if isinstance(proto_results[0], dict) else getattr(proto_results[0], "uuid", None)
+            prototype_uuid = self._find_prototype_uuid("Object")
         
         # Create object concept
         # Store object_name as "name", and merge properties
