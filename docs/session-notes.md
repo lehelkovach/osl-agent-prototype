@@ -99,8 +99,8 @@
 - ~~**Salvage Step D**: Integrate working memory into agent retrieval path~~ ✅ v0.7.0-salvage-step-d
 - **Live Mode**: Eliminate MOCK components (MockWebTools, FakeOpenAI, in-memory storage)
 - ~~**Pattern Reuse Flow**: Implement full CPMS pattern reuse in web flows (Milestone A)~~ ✅ Already implemented + tested
-- **Dataset Selection**: Implement Credential/Identity/PaymentMethod selection (Milestone B) ← NEXT
-- **Selector Adaptation**: Implement trial/adapt loop for failing selectors (Milestone C)
+- ~~**Dataset Selection**: Implement Credential/Identity/PaymentMethod selection (Milestone B)~~ ✅ v0.8.0-milestone-b
+- **Selector Adaptation**: Implement trial/adapt loop for failing selectors (Milestone C) ← NEXT
 - Extend contract coverage across real backends (enable env-flagged Arango/Chroma runs)
 - Fix 9 pre-existing test failures in queue/scheduler
 - ~~Install Playwright browsers for CI~~ ✅ Installed
@@ -109,11 +109,11 @@
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
 
 ## Testing
-- **Latest (2026-01-14)**: `USE_PLAYWRIGHT=1 pytest -q` → 310 passed, 29 skipped, 9 failed
+- **Latest (2026-01-14)**: `USE_PLAYWRIGHT=1 pytest -q` → 327 passed, 29 skipped, 9 failed
   - ✅ Playwright browser installed (`playwright install --with-deps chromium`)
-  - ✅ 3 Playwright tests now passing (web actions, LinkedIn login, locate missing)
+  - ✅ Playwright tests now passing (web actions, LinkedIn login, locate missing)
   - 9 failures: Pre-existing queue/scheduler issues from main branch
-- **Salvage Progress**: Steps A-D complete, added 14+9+46+12 = 81 new tests
+- **Progress**: Salvage Steps A-D (+81), Milestone B (+17) = +98 new tests
 - Previous: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage)
 - Previous: `pytest tests/test_memory_contract.py -q` (passing across mock + networkx)
 - Previous: `pytest tests/test_knowshowgo*.py -q` (KnowShowGo tests passing after merge fix)
