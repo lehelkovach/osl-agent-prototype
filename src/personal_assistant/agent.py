@@ -17,6 +17,7 @@ from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.knowshowgo import KnowShowGoAPI
 from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
+from src.personal_assistant.form_fingerprint import compute_form_fingerprint
 from src.personal_assistant.logging_setup import get_logger
 from src.personal_assistant.learning_engine import LearningEngine
 
@@ -36,6 +37,7 @@ class PersonalAssistantAgent:
         openai_client: Optional[OpenAIClient] = None,
         event_bus: Optional[EventBus] = None,
         use_cpms_for_procs: Optional[bool] = None,
+        use_cpms_for_forms: Optional[bool] = None,
         ksg: Optional[KnowShowGoAPI] = None,
         vision: Optional[Any] = None,
         messages: Optional[Any] = None,
@@ -79,6 +81,12 @@ class PersonalAssistantAgent:
             self.use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS") == "1"
         else:
             self.use_cpms_for_procs = use_cpms_for_procs
+
+        # Flag to store CPMS-detected form patterns into KnowShowGo
+        if use_cpms_for_forms is None:
+            self.use_cpms_for_forms = os.getenv("USE_CPMS_FOR_FORMS") == "1"
+        else:
+            self.use_cpms_for_forms = use_cpms_for_forms
         # Flag to enable ask-user fallback on empty plans (default off to preserve legacy flows)
         self.ask_user_enabled = os.getenv("ASK_USER_FALLBACK") == "1"
 
@@ -1051,14 +1059,77 @@ class PersonalAssistantAgent:
                             screenshot_path = params.get("screenshot_path") or params.get("screenshot")
                             url = params.get("url")
                             dom_snapshot = params.get("dom_snapshot")
+                            concept_uuid = params.get("concept_uuid")
+                            pattern_name = params.get("pattern_name")
+                            form_type_hint = params.get("form_type")
+                            reuse_min_score = float(params.get("reuse_min_score") or os.getenv("KSG_PATTERN_REUSE_MIN_SCORE", "2.0"))
                             
-                            pattern_data = self.cpms.detect_form_pattern(
-                                html=html,
-                                screenshot_path=screenshot_path,
-                                url=url,
-                                dom_snapshot=dom_snapshot
-                            )
-                            res = {"status": "success", "pattern": pattern_data}
+                            # Reuse-first: if we already have a stored CPMS pattern that matches this
+                            # page strongly, return it immediately and avoid a CPMS call.
+                            did_reuse = False
+                            if self.use_cpms_for_forms and self.ksg and url and html:
+                                try:
+                                    best = self.ksg.find_best_cpms_pattern(
+                                        url=url,
+                                        html=html,
+                                        form_type=form_type_hint,
+                                        top_k=1,
+                                    )
+                                    if best and best[0].get("score", 0.0) >= reuse_min_score:
+                                        concept = best[0].get("concept") or {}
+                                        pdata = best[0].get("pattern_data") or {}
+                                        res = {
+                                            "status": "success",
+                                            "pattern": pdata,
+                                            "pattern_uuid": concept.get("uuid"),
+                                            "reused": True,
+                                            "reuse_score": best[0].get("score"),
+                                        }
+                                        # If a concept_uuid was provided, ensure it is linked (best-effort).
+                                        if concept_uuid and concept.get("uuid"):
+                                            try:
+                                                self.ksg.add_association(
+                                                    from_concept_uuid=concept_uuid,
+                                                    to_concept_uuid=concept["uuid"],
+                                                    relation_type="has_pattern",
+                                                    strength=1.0,
+                                                    props={"pattern_name": concept.get("props", {}).get("name") if isinstance(concept.get("props"), dict) else None},
+                                                )
+                                            except Exception:
+                                                pass
+                                        did_reuse = True
+                                except Exception:
+                                    # Ignore reuse errors; fall back to CPMS.
+                                    pass
+
+                            if not did_reuse:
+                                pattern_data = self.cpms.detect_form_pattern(
+                                    html=html,
+                                    screenshot_path=screenshot_path,
+                                    url=url,
+                                    dom_snapshot=dom_snapshot
+                                )
+                                res = {"status": "success", "pattern": pattern_data}
+
+                            # Optional: store pattern into KnowShowGo for future reuse (only when we detected anew).
+                            if not did_reuse and self.use_cpms_for_forms and self.ksg and pattern_data:
+                                try:
+                                    # Attach deterministic fingerprint for later matching.
+                                    if isinstance(pattern_data, dict) and url and html and "fingerprint" not in pattern_data:
+                                        pattern_data["fingerprint"] = compute_form_fingerprint(url=url, html=html).to_dict()
+                                    form_type = pattern_data.get("form_type") if isinstance(pattern_data, dict) else None
+                                    safe_name = pattern_name or f"{url or 'unknown'}:{form_type or 'unknown'}"
+                                    emb = self._embed_text(safe_name) or [0.0, 0.0]
+                                    pattern_uuid = self.ksg.store_cpms_pattern(
+                                        pattern_name=safe_name,
+                                        pattern_data=pattern_data if isinstance(pattern_data, dict) else {"pattern": pattern_data},
+                                        embedding=emb,
+                                        concept_uuid=concept_uuid,
+                                    )
+                                    res["pattern_uuid"] = pattern_uuid
+                                except Exception:
+                                    # Don't fail tool execution if storage fails.
+                                    pass
                         except Exception as exc:
                             res = {"status": "error", "error": str(exc)}
                 elif tool_name == "vision.parse_screenshot" and self.vision:
@@ -1254,62 +1325,144 @@ class PersonalAssistantAgent:
     def _autofill_form(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         Autofill a form using stored FormData/Identity/Credential/PaymentMethod concepts.
-        If the form is detected as a survey, also match similar questions and reuse answers.
-        params: {"url": str, "selectors": {field: selector}, "required_fields": [field], "query": optional str, "questions": optional list}
+        params:
+          - url: str
+          - selectors: optional {field: selector} (direct fill)
+          - required_fields: optional [field]
+          - query: optional str (memory query)
+          - form_type: optional str (login/billing/etc.)
+          - reuse_min_score: optional float (for pattern reuse)
         """
         if not self.web:
             return {"status": "error", "error": "WebTools not configured"}
-        selectors = params.get("selectors", {})
-        required_fields = params.get("required_fields") or list(selectors.keys())
+        url = params.get("url") or ""
+        if not url:
+            return {"status": "error", "error": "url required"}
+
+        # If selectors were explicitly provided, keep the legacy behavior:
+        # fill exactly those selectors using values from memory.
+        selectors = params.get("selectors") or {}
+        if selectors:
+            required_fields = params.get("required_fields") or list(selectors.keys())
+            query = params.get("query", "form data")
+            fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
+            filled = []
+            for field, selector in selectors.items():
+                val = fill_map.get(field)
+                if val is None:
+                    continue
+                res = self.web.fill(url=url, selector=selector, text=str(val))
+                filled.append({"field": field, "value": val, "selector": selector, "result": res})
+            return {"status": "success", "filled": filled}
+
+        # Otherwise, derive selectors from stored patterns (reuse-first) or CPMS detection.
+        dom = self.web.get_dom(url)
+        html = dom.get("html") or dom.get("body") or ""
+        screenshot_path = dom.get("screenshot_path")
+
+        form_type = params.get("form_type")
+        reuse_min_score = float(params.get("reuse_min_score") or os.getenv("KSG_PATTERN_REUSE_MIN_SCORE", "2.0"))
+
+        reused = False
+        pattern_uuid = None
+        pattern_data: Optional[Dict[str, Any]] = None
+
+        # Reuse-first: consult KSG before calling CPMS.
+        if self.use_cpms_for_forms and self.ksg and html:
+            try:
+                best = self.ksg.find_best_cpms_pattern(url=url, html=html, form_type=form_type, top_k=1)
+                if best and best[0].get("score", 0.0) >= reuse_min_score:
+                    concept = best[0].get("concept") or {}
+                    pdata = best[0].get("pattern_data") or {}
+                    if isinstance(pdata, dict):
+                        pattern_data = pdata
+                        pattern_uuid = concept.get("uuid")
+                        reused = True
+            except Exception:
+                pass
+
+        if not pattern_data:
+            if not self.cpms:
+                return {"status": "error", "error": "No stored pattern match and CPMS adapter not configured"}
+            pattern_data = self.cpms.detect_form_pattern(html=html, screenshot_path=screenshot_path, url=url, dom_snapshot=None)
+            reused = False
+
+            # Store exemplar for future reuse.
+            if self.use_cpms_for_forms and self.ksg and isinstance(pattern_data, dict):
+                try:
+                    if "fingerprint" not in pattern_data and html:
+                        pattern_data["fingerprint"] = compute_form_fingerprint(url=url, html=html).to_dict()
+                    safe_name = params.get("pattern_name") or f"{url}:{pattern_data.get('form_type', form_type or 'unknown')}"
+                    emb = self._embed_text(safe_name) or [0.0, 0.0]
+                    pattern_uuid = self.ksg.store_cpms_pattern(
+                        pattern_name=safe_name,
+                        pattern_data=pattern_data,
+                        embedding=emb,
+                        concept_uuid=params.get("concept_uuid"),
+                    )
+                except Exception:
+                    pass
+
+        # Build selector map from the pattern.
+        selector_map: Dict[str, str] = {}
+        fields = pattern_data.get("fields") if isinstance(pattern_data, dict) else None
+        if isinstance(fields, list):
+            for f in fields:
+                if not isinstance(f, dict):
+                    continue
+                ftype = (f.get("type") or "unknown").strip()
+                if ftype in ("submit", "button", "unknown"):
+                    continue
+                sel = f.get("selector") or ""
+                if sel:
+                    selector_map[ftype] = sel
+
+        required_fields = params.get("required_fields") or list(selector_map.keys())
         query = params.get("query", "form data")
-        
-        # First, try standard form data autofill
-        fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
-        
-        # If questions are provided (survey form), try to match similar questions
-        questions = params.get("questions", [])
-        if questions:
-            # Get survey context embedding
-            survey_context = " ".join([q.get("question", "") or q.get("label", "") for q in questions])
-            query_embedding = self._embed_text(survey_context) if survey_context else None
-            
-            # Match survey answers
-            survey_answers = self.form_retriever.match_survey_answers(
-                questions=questions,
-                query_embedding=query_embedding,
-                top_k=5
-            )
-            
-            # Merge survey answers into fill_map (survey answers take precedence for matching fields)
-            for field, answer in survey_answers.items():
-                if field in selectors:  # Only use if field has a selector
-                    fill_map[field] = answer
-        
-        filled = []
-        url = params.get("url", "about:blank")
-        
-        # Build selectors dict for web.fill
-        selectors_dict = {}
-        values_dict = {}
-        for field, selector in selectors.items():
-            val = fill_map.get(field)
-            if val is not None:
-                selectors_dict[field] = selector
-                values_dict[field] = str(val)
-        
-        if selectors_dict:
-            # Use web.fill with selectors and values
-            res = self.web.fill(url=url, selectors=selectors_dict, values=values_dict)
-            if res.get("status") == "success":
-                for field, selector in selectors_dict.items():
-                    filled.append({
-                        "field": field,
-                        "value": values_dict[field],
-                        "selector": selector,
-                        "result": res
-                    })
-        
-        return {"status": "success", "filled": filled, "fill_map": fill_map}
+
+        # Gather values from memory with minimal synonym support.
+        synonym_keys = {
+            "email": ["email", "username"],
+            "username": ["username", "email"],
+            "password": ["password"],
+        }
+
+        nodes = self.form_retriever.fetch_latest(query=query, top_k=20)
+        values_by_key: Dict[str, Any] = {}
+        for node in nodes:
+            props = node.get("props", {}) if isinstance(node, dict) else {}
+            if not isinstance(props, dict):
+                continue
+            for k, v in props.items():
+                if v is not None and k not in values_by_key:
+                    values_by_key[k] = v
+
+        filled: List[Dict[str, Any]] = []
+        missing: List[str] = []
+        for field in required_fields:
+            selector = selector_map.get(field) or selectors.get(field)
+            if not selector:
+                missing.append(field)
+                continue
+            candidates = synonym_keys.get(field, [field])
+            val = None
+            for k in candidates:
+                if k in values_by_key:
+                    val = values_by_key[k]
+                    break
+            if val is None:
+                missing.append(field)
+                continue
+            res = self.web.fill(url=url, selector=selector, text=str(val))
+            filled.append({"field": field, "value": val, "selector": selector, "result": res})
+
+        return {
+            "status": "success",
+            "filled": filled,
+            "missing_fields": sorted(set(missing)),
+            "pattern_uuid": pattern_uuid,
+            "reused": reused,
+        }
 
     def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
         """

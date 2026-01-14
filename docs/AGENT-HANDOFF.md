@@ -166,8 +166,10 @@ The agent implements a complete learning cycle:
 ### In Progress (⏳)
 
 1. **CPMS Integration**
-   - ⏳ Full `detect_form()` integration (v0.1.2 client just installed)
-   - ⏳ Pattern storage and reuse
+   - ✅ `detect_form()` integration (cpms-client v0.1.2) in `cpms_adapter.py`
+   - ✅ Pattern storage via `ksg.store_cpms_pattern()` + `has_pattern`
+   - ✅ Deterministic form fingerprinting + pattern retrieval helper
+   - ⏳ Wire “reuse-first” pattern selection into real web login/billing flows (beyond the `cpms.detect_form` tool path)
    - ⏳ CPMS-enhanced adaptation
 
 2. **Web Automation**
@@ -430,10 +432,9 @@ The agent implements a complete learning cycle:
 
 ### Priority 1: Complete CPMS Integration
 
-1. **Update `cpms_adapter.py`** to use `detect_form()` from v0.1.2 client
-   - Remove fallback comments
-   - Test with real CPMS service (if available)
-   - Add error handling
+1. **Reuse-first patterns in workflows**
+   - In login/billing flows: prefer stored patterns (fingerprint match) before calling CPMS again.
+   - Store new exemplars only when the stored pattern match is weak or a run fails.
 
 2. **Test CPMS Integration**
    - Unit tests with mock client
@@ -459,9 +460,9 @@ The agent implements a complete learning cycle:
 
 ### Priority 3: Documentation Updates
 
-1. **Update README.md** with latest status
-2. **Update development-priorities-summary.md** with completed phases
-3. **Add examples** of successful learning cycles
+1. **Keep a single “current plan” doc**: see `docs/development-plan.md`
+2. **Update README.md** with latest status (optional)
+3. **Add examples** of successful learning cycles (optional)
 
 ---
 
