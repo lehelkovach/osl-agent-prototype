@@ -15,6 +15,9 @@ def extract_domain(url: str) -> str:
             url = f"https://{url}"
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
+        # Remove port if present
+        if ":" in domain:
+            domain = domain.split(":")[0]
         # Remove www. prefix
         if domain.startswith("www."):
             domain = domain[4:]
