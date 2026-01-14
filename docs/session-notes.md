@@ -98,19 +98,20 @@
 - ~~**Salvage Step C**: Add `deterministic_parser.py` for rule-based classification~~ ✅ v0.6.0-salvage-step-c
 - ~~**Salvage Step D**: Integrate working memory into agent retrieval path~~ ✅ v0.7.0-salvage-step-d
 - **Live Mode**: Eliminate MOCK components (MockWebTools, FakeOpenAI, in-memory storage)
-- **Pattern Reuse Flow**: Implement full CPMS pattern reuse in web flows (Milestone A) ← NEXT
-- **Dataset Selection**: Implement Credential/Identity/PaymentMethod selection (Milestone B)
+- ~~**Pattern Reuse Flow**: Implement full CPMS pattern reuse in web flows (Milestone A)~~ ✅ Already implemented + tested
+- **Dataset Selection**: Implement Credential/Identity/PaymentMethod selection (Milestone B) ← NEXT
 - **Selector Adaptation**: Implement trial/adapt loop for failing selectors (Milestone C)
 - Extend contract coverage across real backends (enable env-flagged Arango/Chroma runs)
 - Fix 9 pre-existing test failures in queue/scheduler
-- Install Playwright browsers for CI: `playwright install --with-deps chromium`
+- ~~Install Playwright browsers for CI~~ ✅ Installed
 
 ## Environment / flags
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
 
 ## Testing
-- **Latest (2026-01-14)**: `pytest -q` → 299 passed (+81 from Salvage Steps A-D), 37 skipped, 12 failed
-  - 3 failures: Playwright browser not installed (environment setup needed)
+- **Latest (2026-01-14)**: `USE_PLAYWRIGHT=1 pytest -q` → 310 passed, 29 skipped, 9 failed
+  - ✅ Playwright browser installed (`playwright install --with-deps chromium`)
+  - ✅ 3 Playwright tests now passing (web actions, LinkedIn login, locate missing)
   - 9 failures: Pre-existing queue/scheduler issues from main branch
 - **Salvage Progress**: Steps A-D complete, added 14+9+46+12 = 81 new tests
 - Previous: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage)
