@@ -20,6 +20,10 @@ from src.personal_assistant.form_filler import FormDataRetriever
 from src.personal_assistant.form_fingerprint import compute_form_fingerprint
 from src.personal_assistant.logging_setup import get_logger
 from src.personal_assistant.learning_engine import LearningEngine
+from src.personal_assistant.working_memory import WorkingMemoryGraph
+from src.personal_assistant.deterministic_parser import (
+    infer_concept_kind, quick_parse, is_obvious_intent, get_confidence_score
+)
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -89,6 +93,17 @@ class PersonalAssistantAgent:
             self.use_cpms_for_forms = use_cpms_for_forms
         # Flag to enable ask-user fallback on empty plans (default off to preserve legacy flows)
         self.ask_user_enabled = os.getenv("ASK_USER_FALLBACK") == "1"
+        
+        # Working memory for session-scoped activation (Hebbian reinforcement)
+        reinforce_delta = float(os.getenv("WORKING_MEMORY_REINFORCE_DELTA", "1.0"))
+        max_weight = float(os.getenv("WORKING_MEMORY_MAX_WEIGHT", "100.0"))
+        self.working_memory = WorkingMemoryGraph(
+            reinforce_delta=reinforce_delta,
+            max_weight=max_weight
+        )
+        
+        # Flag to use deterministic parser for obvious intents (skip LLM)
+        self.skip_llm_for_obvious = os.getenv("SKIP_LLM_FOR_OBVIOUS_INTENTS") == "1"
 
     def execute_request(self, user_request: str) -> Dict[str, Any]:
         """
@@ -116,6 +131,10 @@ class PersonalAssistantAgent:
         memory_results = self.memory.search(
             user_request, top_k=top_k, query_embedding=query_embedding
         )
+        
+        # Apply working memory activation boost to results
+        memory_results = self._boost_by_activation(memory_results, query_uuid=provenance.trace_id)
+        
         self.log.info(
             "memory_retrieved",
             results=len(memory_results),
@@ -288,12 +307,12 @@ class PersonalAssistantAgent:
                 error=str(exc),
                 trace_id=provenance.trace_id,
             )
-            plan = self._reuse_or_fallback(intent, user_request, proc_matches)
+            plan = self._reuse_or_fallback(intent, user_request, proc_matches, trace_id=provenance.trace_id)
             raw_llm = None
         if raw_llm:
             self._log_message("assistant", raw_llm, provenance)
         if plan.get("error") or not plan.get("steps"):
-            plan = self._reuse_or_fallback(intent, user_request, proc_matches)
+            plan = self._reuse_or_fallback(intent, user_request, proc_matches, trace_id=provenance.trace_id)
         if plan.get("fallback") or plan.get("reuse"):
             plan.setdefault("raw_llm", "Hello! I'm ready to help.")
 
@@ -1501,6 +1520,109 @@ class PersonalAssistantAgent:
         except Exception:
             return None
 
+    # -------------------------------------------------------------------------
+    # Working Memory Integration (Salvage Step D)
+    # -------------------------------------------------------------------------
+    
+    def _boost_by_activation(self, results: List[Dict[str, Any]], query_uuid: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Boost search results by working memory activation.
+        
+        Adds an '_activation_boost' field to each result and optionally
+        adjusts the score. Results are re-sorted by combined score.
+        
+        Args:
+            results: List of search results (dicts with 'uuid' and optionally 'score')
+            query_uuid: Optional query context UUID for linking
+            
+        Returns:
+            Results with activation boost applied and re-sorted
+        """
+        if not results:
+            return results
+        
+        activation_weight = 0.1  # Tunable: how much activation affects ranking
+        
+        for result in results:
+            uuid = result.get("uuid")
+            boost = 0.0
+            if uuid:
+                boost = self.working_memory.get_activation_boost(uuid, default=0.0)
+            result["_activation_boost"] = boost
+            # Combine with existing score if present
+            if "score" in result:
+                result["_boosted_score"] = result["score"] + (boost * activation_weight)
+            else:
+                result["_boosted_score"] = boost * activation_weight
+        
+        # Re-sort by boosted score (higher first)
+        return sorted(results, key=lambda r: r.get("_boosted_score", 0), reverse=True)
+    
+    def _reinforce_selection(self, query_uuid: str, selected_uuid: str, seed_weight: float = 1.0) -> None:
+        """
+        Reinforce working memory when a concept/procedure is selected.
+        
+        Creates or strengthens the link between query context and selected item.
+        Implements Hebbian learning: "neurons that fire together wire together".
+        
+        Args:
+            query_uuid: The query/context UUID
+            selected_uuid: The selected concept/procedure UUID
+            seed_weight: Initial weight for new links (default 1.0)
+        """
+        self.working_memory.link(query_uuid, selected_uuid, seed_weight=seed_weight)
+        self.log.debug(
+            "working_memory_reinforced",
+            query_uuid=query_uuid,
+            selected_uuid=selected_uuid,
+            new_weight=self.working_memory.get_weight(query_uuid, selected_uuid)
+        )
+    
+    def _classify_intent_with_fallback(self, user_request: str) -> str:
+        """
+        Classify intent using deterministic parser first, then LLM for ambiguous cases.
+        
+        When SKIP_LLM_FOR_OBVIOUS_INTENTS=1, uses rule-based classification for
+        obvious intents (events with time, questions, clear action verbs) to
+        reduce API costs and improve response time.
+        
+        Args:
+            user_request: The user's request text
+            
+        Returns:
+            Intent string: "task", "event", "query", "procedure", or "inform"
+        """
+        # Try deterministic classification first
+        kind = infer_concept_kind(user_request)
+        
+        # Check if it's obvious enough to skip LLM
+        if self.skip_llm_for_obvious and is_obvious_intent(user_request, kind):
+            confidence = get_confidence_score(user_request, kind)
+            self.log.debug(
+                "deterministic_intent_classification",
+                kind=kind,
+                confidence=confidence,
+                skipped_llm=True
+            )
+            return kind
+        
+        # Fall back to LLM for complex/ambiguous cases
+        return self._classify_intent(user_request)
+    
+    def _get_activated_concepts(self, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get top activated concepts from working memory for context.
+        
+        Useful for providing recent context to the LLM planner.
+        
+        Args:
+            top_k: Number of top activated concepts to return
+            
+        Returns:
+            List of (uuid, activation) tuples for most activated concepts
+        """
+        return self.working_memory.get_top_activated(top_k=top_k)
+
     def _load_procedure_steps(self, proc: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Hydrate stored procedure steps from memory (ProcedureBuilder format).
@@ -1994,12 +2116,18 @@ class PersonalAssistantAgent:
             url = f"https://{url}"
         return url
 
-    def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list) -> Dict[str, Any]:
+    def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list, trace_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Prefer reuse of a retrieved procedure if available; else fallback.
         """
         if proc_matches:
             proc = proc_matches[0]
+            proc_uuid = proc.get("uuid")
+            
+            # Reinforce working memory when we select a procedure for reuse
+            if proc_uuid and trace_id:
+                self._reinforce_selection(trace_id, proc_uuid, seed_weight=2.0)
+            
             steps = self._load_procedure_steps(proc)
             if steps:
                 if len(steps) <= 1:
