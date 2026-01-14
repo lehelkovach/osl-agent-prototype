@@ -47,13 +47,17 @@ class KnowShowGoAPI:
 
     def _find_prototype_uuid(self, name: str, top_k: int = 5) -> Optional[str]:
         results = self.memory.search(name, top_k=top_k, filters={"kind": "topic"})
-        if not results:
-            results = self.memory.search(name, top_k=top_k)
         candidates = []
         for result in results:
             normalized = self._normalize_result(result)
             if self._is_prototype(normalized):
                 candidates.append(normalized)
+        if not candidates:
+            results = self.memory.search(name, top_k=top_k)
+            for result in results:
+                normalized = self._normalize_result(result)
+                if self._is_prototype(normalized):
+                    candidates.append(normalized)
         if not candidates:
             return None
         for candidate in candidates:
