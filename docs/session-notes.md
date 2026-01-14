@@ -33,6 +33,11 @@
 - Keep procedure planning JSON-first: LLM returns `{"commandtype": ..., "metadata": {...}}` with procedure steps; execute and persist run stats + links.
 
 ## Recent changes
+- **Branch Merge Complete (2026-01-14)**: Merged `cursor/branch-merge-assessment-c4d7` into main. Features: CPMS integration, form fingerprinting, documentation updates, KnowShowGo bundle, code cleanup. Branches archived to `archived/cursor/*`.
+- **Planning Documents Created**: Added `docs/opus-next-steps.md` (Opus priorities), `docs/MASTER-PLAN.md` (unified roadmap merging Opus/GPT/Salvage perspectives).
+- **Salvage Plan Integrated**: `docs/salvage-osl-agent-prototype.txt` provides component porting guide (WorkingMemoryGraph, AsyncReplicator, DeterministicParser).
+- **GPT Plans Added**: `docs/gpt-plans.md` outlines refactor roadmap and milestones.
+- **Test Status**: 218 passed, 37 skipped, 12 failed (3 Playwright env, 9 pre-existing).
 - **Module 3 (Execute) Complete**: Added DAG execution tests, fixed enqueue_fn signature issue, verified end-to-end execution. Agent can now execute recalled procedures via DAG structures.
 - **Module 4 (Adapt) Complete**: Implemented `_adapt_procedure_on_failure()` method that detects execution failures, adapts procedures based on errors and user requests, stores adapted versions, and links them to originals. All tests passing.
 - **Phase 3 (Full Cycle Validation) Complete**: Created comprehensive end-to-end tests (`tests/test_agent_full_learning_cycle.py`) validating the complete learning cycle: Learn → Recall → Execute → Adapt → Generalize. All tests passing.
@@ -82,31 +87,34 @@
 - Added direct note recall path in agent for concept-named queries; Arango integration suite now passes (procedure reuse + concept note recall).
 
 ## Outstanding TODOs
-- Extend contract coverage across real backends (enable env-flagged Arango/Chroma runs) and align behaviors where they diverge.
-- Consider beefing up NetworkX/Mock backends to mirror DB edge queries if needed.
-- Adjust memory recall heuristics so inform queries prefer the most relevant Concept/note over Person/Name nodes.
-- Decide on dual-write/strength-weighting later; defer until core abstraction is stable.
-- **CPMS Integration**: See `docs/cpms-integration-plan.md` for detailed CPMS development tasks. Core agent/KnowShowGo integration is complete; CPMS-specific work (pattern matching API, observation building, signal extraction) can proceed in parallel.
-- **Pattern reuse in workflows**: integrate pattern retrieval into actual login/billing flows so the agent can autofill with stored patterns/datasets without needing to call CPMS every time.
+- **Salvage Step A**: Add `working_memory.py` with WorkingMemoryGraph (unanimous priority from salvage plan)
+- **Salvage Step B**: Add `async_replicator.py` for background persistence (optional, behind flag)
+- **Salvage Step C**: Add `deterministic_parser.py` for rule-based classification
+- **Salvage Step D**: Integrate working memory into agent retrieval path
+- **Live Mode**: Eliminate MOCK components (MockWebTools, FakeOpenAI, in-memory storage)
+- **Pattern Reuse Flow**: Implement full CPMS pattern reuse in web flows (Milestone A)
+- **Dataset Selection**: Implement Credential/Identity/PaymentMethod selection (Milestone B)
+- **Selector Adaptation**: Implement trial/adapt loop for failing selectors (Milestone C)
+- Extend contract coverage across real backends (enable env-flagged Arango/Chroma runs)
+- Fix 9 pre-existing test failures in queue/scheduler
+- Install Playwright browsers for CI: `playwright install --with-deps chromium`
 
 ## Environment / flags
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
 
 ## Testing
-- Last run: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage; passing).
-- Last run: `pytest tests/test_memory_contract.py -q` (passing across mock + networkx).
-- Additional recent: `pytest tests/test_llm_json_command_contract.py -q` (pass/skip live), `pytest tests/test_memory_recall_priority.py -q`, `pytest tests/test_memory_associations_and_strength.py -q`.
-- New: `pytest tests/test_procedure_multi_step_integration.py -q` (pass, Arango path skipped), `pytest tests/test_knowshowgo_dag_and_recall.py -q`, `pytest tests/test_agent_arango_ksg_integration.py -q` (passes with `.env.local`).
-- Latest: `pytest tests/test_agent_execute_plan_errors.py -q` (passes; includes adaptation replan path).
-- Latest: `pytest tests/test_memory_recall_priority.py -q` (passes; includes name-vs-note preference fix).
-- Latest: `pytest tests/test_agent_execute_plan_errors.py -q` (post-fill-fallback tweak; passing).
-- Latest: `pytest tests/test_agent_procedure_reuse_execute.py tests/test_agent_execute_plan_errors.py -q` (passing).
-- Latest: `pytest tests/test_cpms_routing_toggle.py -q` (passing).
-- Latest: `pytest tests/test_agent_plan_fallback_on_error.py tests/test_agent_ask_user_on_empty_plan.py -q` (passing).
-- Latest: `pytest tests/test_agent_procedure_selector_update.py tests/test_agent_ask_user_on_execution_error.py -q` (passing).
-- Latest: `pytest -q` (all tests; 171 passed, 12 skipped).
+- **Latest (2026-01-14)**: `pytest -q` → 218 passed, 37 skipped, 12 failed
+  - 3 failures: Playwright browser not installed (environment setup needed)
+  - 9 failures: Pre-existing queue/scheduler issues from main branch
+- Previous: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage)
+- Previous: `pytest tests/test_memory_contract.py -q` (passing across mock + networkx)
+- Previous: `pytest tests/test_knowshowgo*.py -q` (KnowShowGo tests passing after merge fix)
 
 ## Guidance
-- See `copilot-prompt.txt` for condensed operating instructions for future sessions (including how to keep `docs/session-notes.md` current, debug loop: run daemon, send curl requests, read/clear `log_dump.txt`, fix/restart on errors, and commit after completing goals).
-- Architecture reference: `docs/architecture.md` for components/ontology/memory/testing; re-read it alongside `copilot-prompt.txt` and this file when resuming work.
-- Test coverage summary lives in `docs/architecture.md` (memory/recall, procedures, LLM plan contract, KSG tools, forms/credentials, Arango smoke) plus noted gaps (no real Playwright/Appium, shell executor, etc.).
+- **Master Plan**: See `docs/MASTER-PLAN.md` for unified roadmap (merges Opus/GPT/Salvage perspectives)
+- **Opus Priorities**: See `docs/opus-next-steps.md` for Claude Opus planning document
+- **Salvage Components**: See `docs/salvage-osl-agent-prototype.txt` for porting guide
+- **GPT Roadmap**: See `docs/gpt-plans.md` for refactor roadmap
+- See `copilot-prompt.txt` for condensed operating instructions (debug loop, env flags, workflow)
+- Architecture reference: `docs/architecture.md` for components/ontology/memory/testing
+- Test coverage summary in `docs/architecture.md` plus noted gaps (Playwright needs browser install)
