@@ -33,6 +33,12 @@
 - Keep procedure planning JSON-first: LLM returns `{"commandtype": ..., "metadata": {...}}` with procedure steps; execute and persist run stats + links.
 
 ## Recent changes
+- **Salvage Steps A-D Complete (2026-01-14)**: 
+  - Step A: WorkingMemoryGraph (Hebbian reinforcement for retrieval) v0.5.0-salvage-step-a
+  - Step B: AsyncReplicator (background persistence worker) v0.5.0-salvage-step-b
+  - Step C: DeterministicParser (rule-based intent classification) v0.6.0-salvage-step-c
+  - Step D: Agent integration (memory boost + reinforcement) v0.7.0-salvage-step-d
+  - Total: +81 new tests (14+9+46+12), all passing
 - **Branch Merge Complete (2026-01-14)**: Merged `cursor/branch-merge-assessment-c4d7` into main. Features: CPMS integration, form fingerprinting, documentation updates, KnowShowGo bundle, code cleanup. Branches archived to `archived/cursor/*`.
 - **Planning Documents Created**: Added `docs/opus-next-steps.md` (Opus priorities), `docs/MASTER-PLAN.md` (unified roadmap merging Opus/GPT/Salvage perspectives).
 - **Salvage Plan Integrated**: `docs/salvage-osl-agent-prototype.txt` provides component porting guide (WorkingMemoryGraph, AsyncReplicator, DeterministicParser).
@@ -87,12 +93,12 @@
 - Added direct note recall path in agent for concept-named queries; Arango integration suite now passes (procedure reuse + concept note recall).
 
 ## Outstanding TODOs
-- **Salvage Step A**: Add `working_memory.py` with WorkingMemoryGraph (unanimous priority from salvage plan)
-- **Salvage Step B**: Add `async_replicator.py` for background persistence (optional, behind flag)
-- **Salvage Step C**: Add `deterministic_parser.py` for rule-based classification
-- **Salvage Step D**: Integrate working memory into agent retrieval path
+- ~~**Salvage Step A**: Add `working_memory.py` with WorkingMemoryGraph~~ ✅ v0.5.0-salvage-step-a
+- ~~**Salvage Step B**: Add `async_replicator.py` for background persistence~~ ✅ v0.5.0-salvage-step-b
+- ~~**Salvage Step C**: Add `deterministic_parser.py` for rule-based classification~~ ✅ v0.6.0-salvage-step-c
+- ~~**Salvage Step D**: Integrate working memory into agent retrieval path~~ ✅ v0.7.0-salvage-step-d
 - **Live Mode**: Eliminate MOCK components (MockWebTools, FakeOpenAI, in-memory storage)
-- **Pattern Reuse Flow**: Implement full CPMS pattern reuse in web flows (Milestone A)
+- **Pattern Reuse Flow**: Implement full CPMS pattern reuse in web flows (Milestone A) ← NEXT
 - **Dataset Selection**: Implement Credential/Identity/PaymentMethod selection (Milestone B)
 - **Selector Adaptation**: Implement trial/adapt loop for failing selectors (Milestone C)
 - Extend contract coverage across real backends (enable env-flagged Arango/Chroma runs)
@@ -103,9 +109,10 @@
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
 
 ## Testing
-- **Latest (2026-01-14)**: `pytest -q` → 218 passed, 37 skipped, 12 failed
+- **Latest (2026-01-14)**: `pytest -q` → 299 passed (+81 from Salvage Steps A-D), 37 skipped, 12 failed
   - 3 failures: Playwright browser not installed (environment setup needed)
   - 9 failures: Pre-existing queue/scheduler issues from main branch
+- **Salvage Progress**: Steps A-D complete, added 14+9+46+12 = 81 new tests
 - Previous: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage)
 - Previous: `pytest tests/test_memory_contract.py -q` (passing across mock + networkx)
 - Previous: `pytest tests/test_knowshowgo*.py -q` (KnowShowGo tests passing after merge fix)
