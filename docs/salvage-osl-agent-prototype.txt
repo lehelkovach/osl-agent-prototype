@@ -1,0 +1,804 @@
+################################################################################
+#                                                                              #
+#         MERGED SALVAGE PLAN: Changes for osl-agent-prototype                 #
+#                                                                              #
+################################################################################
+#                                                                              #
+#  Synthesized from analyses by:                                               #
+#    - Claude Opus 4 (Anthropic)                                               #
+#    - GPT-5.2 (OpenAI)                                                        #
+#    - Gemini 3 Pro Preview (Google)                                           #
+#                                                                              #
+#  Date: 2026-01-14                                                            #
+#  Target: github.com/lehelkovach/osl-agent-prototype                          #
+#  Source: github.com/lehelkovach/osl-agent (deprecated knowshowgo)            #
+#                                                                              #
+################################################################################
+
+================================================================================
+CONSENSUS SUMMARY
+================================================================================
+
+All three foundation models (Claude, GPT-5.2, Gemini) independently identified
+the same high-priority components to salvage from the deprecated repository.
+This strong consensus validates these as genuinely valuable abstractions.
+
+UNANIMOUS AGREEMENT (ALL 3 MODELS):
+  1. WorkingMemoryGraph - Reinforcement-based short-term memory
+  2. AsyncReplicator - Queue-based async persistence pattern
+
+STRONG AGREEMENT (2+ MODELS):
+  3. Immutable Prototype Model - Frozen schemas with version chains
+  4. Lightweight NLP Inference - Deterministic task/event classification
+  5. Microservice Packaging Pattern - Modular decomposition blueprint
+
+
+================================================================================
+PART 1: WORKING MEMORY GRAPH (UNANIMOUS - HIGHEST PRIORITY)
+================================================================================
+
+SOURCE FILE: src/knowshowgo/working_memory.py
+TARGET FILE: src/personal_assistant/working_memory.py
+
+WHAT TO PORT:
+The entire WorkingMemoryGraph class (~44 lines) with its API:
+  - link(source, target, seed_weight) -> float
+  - access(source, target) -> float | None  
+  - get_weight(source, target) -> float | None
+  - Configurable reinforce_delta and max_weight
+
+WHY (CONSENSUS REASONING):
+  - Claude: "cognitive model of 'strengthening through use'"
+  - GPT-5.2: "short-term activation / reinforcement as first-class component"
+  - Gemini: "Hebbian Learning - neurons that fire together wire together"
+
+CRITICAL DESIGN DECISION (from GPT-5.2):
+  Keep activation graph SEPARATE from semantic store:
+  - Semantic store (Arango/Chroma) = durable, global memory
+  - Activation graph = session-scoped or time-window-scoped (optional persistence)
+  
+  This prevents mixing short-term activation signals with long-term knowledge.
+
+-------------------------------------------------------------------------------
+AGENT INSTRUCTIONS: Create working_memory.py
+-------------------------------------------------------------------------------
+
+STEP 1: Create the new file
+
+```bash
+# In osl-agent-prototype repository
+touch src/personal_assistant/working_memory.py
+```
+
+STEP 2: Copy and adapt the following code:
+
+```python
+"""
+Working Memory Graph: Short-term activation layer with reinforcement.
+
+Ported from deprecated knowshowgo repository.
+Implements Hebbian learning: frequently accessed associations become stronger.
+
+Design principle (per GPT-5.2): This is SEPARATE from semantic memory.
+- Semantic store (Arango/Chroma) = durable, global knowledge
+- Working memory = session-scoped activation for retrieval boosting
+"""
+
+import networkx as nx
+from typing import Optional
+
+
+class WorkingMemoryGraph:
+    """NetworkX-backed working memory for selection/retrieval boosting.
+
+    Implements reinforcement-on-access: edges strengthen when used.
+    
+    Usage:
+        wm = WorkingMemoryGraph(reinforce_delta=1.0, max_weight=100.0)
+        
+        # Create/reinforce edge when concept is selected
+        weight = wm.link("procedure_uuid", "step_uuid", seed_weight=0.5)
+        
+        # Access reinforces existing edges (read = strengthen)
+        weight = wm.access("procedure_uuid", "step_uuid")
+        
+        # Query without side effects
+        weight = wm.get_weight("procedure_uuid", "step_uuid")
+    """
+
+    def __init__(self, reinforce_delta: float = 1.0, max_weight: float = 100.0) -> None:
+        self._g = nx.DiGraph()
+        self.reinforce_delta = reinforce_delta
+        self.max_weight = max_weight
+
+    def _ensure_nodes(self, u: str, v: str) -> None:
+        if not self._g.has_node(u):
+            self._g.add_node(u)
+        if not self._g.has_node(v):
+            self._g.add_node(v)
+
+    def link(self, source: str, target: str, seed_weight: float = 0.0) -> float:
+        """Create or reinforce an edge; returns updated weight."""
+        self._ensure_nodes(source, target)
+        if self._g.has_edge(source, target):
+            self._g[source][target]["weight"] = min(
+                self.max_weight, self._g[source][target]["weight"] + self.reinforce_delta
+            )
+        else:
+            self._g.add_edge(source, target, weight=min(self.max_weight, seed_weight))
+        return self._g[source][target]["weight"]
+
+    def access(self, source: str, target: str) -> Optional[float]:
+        """Access reinforces the edge if present. Returns None if edge doesn't exist."""
+        if not self._g.has_edge(source, target):
+            return None
+        self._g[source][target]["weight"] = min(
+            self.max_weight, self._g[source][target]["weight"] + self.reinforce_delta
+        )
+        return self._g[source][target]["weight"]
+
+    def get_weight(self, source: str, target: str) -> Optional[float]:
+        """Query edge weight without reinforcement (no side effects)."""
+        edge = self._g.get_edge_data(source, target)
+        return None if edge is None else edge.get("weight")
+
+    def get_activation_boost(self, node_uuid: str, default: float = 0.0) -> float:
+        """Get total incoming activation for a node (for retrieval boosting)."""
+        if not self._g.has_node(node_uuid):
+            return default
+        total = sum(
+            self._g[pred][node_uuid].get("weight", 0.0)
+            for pred in self._g.predecessors(node_uuid)
+        )
+        return total if total > 0 else default
+
+    def decay_all(self, decay_factor: float = 0.9) -> None:
+        """Apply decay to all edges (call periodically for forgetting)."""
+        for u, v, data in self._g.edges(data=True):
+            data["weight"] = data.get("weight", 0.0) * decay_factor
+
+    def clear(self) -> None:
+        """Clear all activation (start fresh session)."""
+        self._g.clear()
+```
+
+STEP 3: Create test file
+
+```bash
+touch tests/test_working_memory.py
+```
+
+```python
+"""Tests for WorkingMemoryGraph - ported from deprecated repo."""
+import pytest
+from src.personal_assistant.working_memory import WorkingMemoryGraph
+
+
+def test_link_creates_edge_with_seed_weight():
+    wm = WorkingMemoryGraph(reinforce_delta=2.0, max_weight=10.0)
+    weight = wm.link("a", "b", seed_weight=1.0)
+    assert weight == 1.0
+    assert wm.get_weight("a", "b") == 1.0
+
+
+def test_link_reinforces_existing_edge():
+    wm = WorkingMemoryGraph(reinforce_delta=2.0, max_weight=10.0)
+    wm.link("a", "b", seed_weight=1.0)
+    weight = wm.link("a", "b")  # Reinforce
+    assert weight == 3.0  # 1.0 + 2.0
+
+
+def test_link_respects_max_weight():
+    wm = WorkingMemoryGraph(reinforce_delta=5.0, max_weight=3.0)
+    wm.link("a", "b", seed_weight=1.0)
+    weight = wm.link("a", "b")  # Would be 6.0 without cap
+    assert weight == 3.0
+
+
+def test_access_reinforces_edge():
+    wm = WorkingMemoryGraph(reinforce_delta=1.0, max_weight=100.0)
+    wm.link("a", "b", seed_weight=5.0)
+    weight = wm.access("a", "b")
+    assert weight == 6.0
+
+
+def test_access_returns_none_for_missing_edge():
+    wm = WorkingMemoryGraph()
+    assert wm.access("missing", "edge") is None
+
+
+def test_get_weight_no_side_effects():
+    wm = WorkingMemoryGraph(reinforce_delta=1.0)
+    wm.link("a", "b", seed_weight=5.0)
+    assert wm.get_weight("a", "b") == 5.0
+    assert wm.get_weight("a", "b") == 5.0  # Still 5.0, no reinforcement
+
+
+def test_get_activation_boost():
+    wm = WorkingMemoryGraph()
+    wm.link("x", "target", seed_weight=3.0)
+    wm.link("y", "target", seed_weight=2.0)
+    assert wm.get_activation_boost("target") == 5.0
+
+
+def test_decay_all():
+    wm = WorkingMemoryGraph()
+    wm.link("a", "b", seed_weight=10.0)
+    wm.decay_all(decay_factor=0.5)
+    assert wm.get_weight("a", "b") == 5.0
+```
+
+STEP 4: Integrate with agent memory retrieval
+
+In `src/personal_assistant/agent.py`, add working memory boost to search results:
+
+```python
+# In PersonalAssistantAgent.__init__():
+from src.personal_assistant.working_memory import WorkingMemoryGraph
+self.working_memory = WorkingMemoryGraph(reinforce_delta=1.0, max_weight=50.0)
+
+# In memory retrieval path (e.g., execute_request or search method):
+def _boost_by_activation(self, results: List[Dict], query_uuid: str) -> List[Dict]:
+    """Boost search results by working memory activation."""
+    for result in results:
+        uuid = result.get("uuid")
+        if uuid:
+            boost = self.working_memory.get_activation_boost(uuid)
+            result["_activation_boost"] = boost
+            # Optionally modify ranking score
+            if "score" in result:
+                result["score"] += boost * 0.1  # Tunable weight
+    return sorted(results, key=lambda r: r.get("score", 0), reverse=True)
+
+# When agent selects/uses a concept or procedure:
+def _reinforce_selection(self, query_uuid: str, selected_uuid: str):
+    """Reinforce when agent selects a concept/procedure."""
+    self.working_memory.link(query_uuid, selected_uuid, seed_weight=1.0)
+```
+
+
+================================================================================
+PART 2: ASYNC REPLICATOR (UNANIMOUS - HIGH PRIORITY)
+================================================================================
+
+SOURCE FILE: src/knowshowgo/replication.py
+TARGET FILE: src/personal_assistant/async_replicator.py
+
+WHAT TO PORT:
+  - EdgeUpdate dataclass
+  - GraphClient Protocol
+  - AsyncReplicator class with queue semantics
+
+WHY (CONSENSUS REASONING):
+  - Claude: "enables decoupled writes, batching, resilience"
+  - GPT-5.2: "flush semantics (queue.join()), clean lifecycle (start/stop)"
+  - Gemini: "fire-and-forget... significantly improves latency"
+
+-------------------------------------------------------------------------------
+AGENT INSTRUCTIONS: Create async_replicator.py
+-------------------------------------------------------------------------------
+
+STEP 1: Create the file
+
+```python
+"""
+Async Replicator: Background worker for persisting activation updates.
+
+Ported from deprecated knowshowgo repository.
+Decouples hot path from database writes for better latency.
+
+Usage:
+    replicator = AsyncReplicator(arango_graph_client)
+    await replicator.start()
+    
+    # Fire-and-forget from agent loop
+    await replicator.enqueue(EdgeUpdate("a", "b", delta=1.0, max_weight=100.0))
+    
+    # Graceful shutdown with flush
+    await replicator.queue.join()  # Wait for pending writes
+    await replicator.stop()
+"""
+
+import asyncio
+from dataclasses import dataclass
+from typing import Protocol, Optional
+
+
+@dataclass
+class EdgeUpdate:
+    """Represents a weight update to persist."""
+    source: str
+    target: str
+    delta: float
+    max_weight: float
+
+
+class GraphClient(Protocol):
+    """Protocol for persistence backends that support edge weight updates."""
+    
+    async def increment_edge_weight(
+        self, source: str, target: str, delta: float, max_weight: float
+    ) -> None:
+        """Atomically increment edge weight with cap."""
+        ...
+
+
+class AsyncReplicator:
+    """Background worker to push edge-weight updates to long-term store.
+    
+    Features:
+    - Async queue with backpressure
+    - Clean start/stop lifecycle
+    - Flush semantics via queue.join()
+    - Pluggable backend via GraphClient protocol
+    """
+
+    def __init__(self, client: GraphClient, max_queue_size: int = 1000) -> None:
+        self.client = client
+        self.queue: asyncio.Queue[EdgeUpdate] = asyncio.Queue(maxsize=max_queue_size)
+        self._task: Optional[asyncio.Task] = None
+        self._running = False
+
+    async def start(self) -> None:
+        """Start the background worker."""
+        if self._task is None:
+            self._running = True
+            self._task = asyncio.create_task(self._worker())
+
+    async def stop(self) -> None:
+        """Stop the worker gracefully."""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def enqueue(self, update: EdgeUpdate) -> None:
+        """Queue an update for background persistence."""
+        await self.queue.put(update)
+
+    def enqueue_nowait(self, update: EdgeUpdate) -> bool:
+        """Non-blocking enqueue. Returns False if queue is full."""
+        try:
+            self.queue.put_nowait(update)
+            return True
+        except asyncio.QueueFull:
+            return False
+
+    async def _worker(self) -> None:
+        """Worker loop: consume updates and persist."""
+        while self._running:
+            try:
+                update = await asyncio.wait_for(self.queue.get(), timeout=1.0)
+                try:
+                    await self.client.increment_edge_weight(
+                        source=update.source,
+                        target=update.target,
+                        delta=update.delta,
+                        max_weight=update.max_weight,
+                    )
+                except Exception as e:
+                    # Log but don't crash worker
+                    pass  # TODO: Add proper logging
+                finally:
+                    self.queue.task_done()
+            except asyncio.TimeoutError:
+                continue  # Check _running flag periodically
+            except asyncio.CancelledError:
+                break
+```
+
+STEP 2: Extend ArangoMemoryTools with increment_edge_weight
+
+In `src/personal_assistant/arango_memory.py`, add:
+
+```python
+async def increment_edge_weight(
+    self, source: str, target: str, delta: float, max_weight: float
+) -> None:
+    """Atomically increment edge weight with cap (for AsyncReplicator)."""
+    # AQL update with MIN cap
+    aql = """
+    FOR e IN @@edges
+        FILTER e._from == @from_id AND e._to == @to_id
+        UPDATE e WITH { 
+            props: MERGE(e.props, { 
+                w: MIN(@max_weight, (e.props.w || 0) + @delta) 
+            }) 
+        } IN @@edges
+        RETURN NEW
+    """
+    bind_vars = {
+        "@edges": self.edges_collection_name,
+        "from_id": f"{self.nodes_collection_name}/{source}",
+        "to_id": f"{self.nodes_collection_name}/{target}",
+        "delta": delta,
+        "max_weight": max_weight,
+    }
+    # Run async if using async driver, else wrap in executor
+    self.db.aql.execute(aql, bind_vars=bind_vars)
+```
+
+STEP 3: Wire into agent (optional background persistence)
+
+```python
+# In agent.py or service.py:
+import os
+from src.personal_assistant.async_replicator import AsyncReplicator, EdgeUpdate
+
+# Enable via environment variable
+if os.getenv("ASYNC_REPLICATION") == "1":
+    self.replicator = AsyncReplicator(self.memory)
+    # Start in service startup
+    await self.replicator.start()
+    
+    # When reinforcing in working memory, also persist:
+    def _reinforce_and_persist(self, source: str, target: str, delta: float):
+        self.working_memory.link(source, target, seed_weight=delta)
+        if self.replicator:
+            self.replicator.enqueue_nowait(
+                EdgeUpdate(source, target, delta, self.working_memory.max_weight)
+            )
+```
+
+
+================================================================================
+PART 3: LIGHTWEIGHT NLP INFERENCE (2/3 MODELS - MEDIUM PRIORITY)
+================================================================================
+
+SOURCE FILE: src/knowshowgo/inference.py
+TARGET FILE: src/personal_assistant/deterministic_parser.py
+
+WHAT TO PORT:
+  - infer_concept_kind(instruction) - keyword-based task/event classification
+  - extract_event_fields(instruction) - regex time extraction
+
+WHY (CONSENSUS REASONING):
+  - Claude: "reduce LLM API costs for simple queries"
+  - GPT-5.2: "offline/dev/test modes (no API keys, no LLM), predictable unit tests"
+
+-------------------------------------------------------------------------------
+AGENT INSTRUCTIONS: Create deterministic_parser.py
+-------------------------------------------------------------------------------
+
+```python
+"""
+Deterministic Parser: Rule-based classification without LLM.
+
+Ported from deprecated knowshowgo repository.
+Use for: offline mode, cost optimization, fast preprocessing.
+"""
+
+import re
+from typing import Dict, Optional, Tuple
+
+# Keywords that suggest different intent types
+EVENT_KEYWORDS = {"remind", "schedule", "event", "meet", "meeting", "appointment", "call"}
+TASK_KEYWORDS = {"todo", "task", "do", "complete", "finish", "fix", "implement", "add"}
+QUERY_KEYWORDS = {"what", "when", "where", "who", "how", "why", "show", "list", "find"}
+
+
+def infer_concept_kind(instruction: str) -> str:
+    """
+    Classify instruction into concept type without LLM.
+    
+    Returns: "event", "task", or "query"
+    """
+    text = instruction.lower()
+    
+    if any(keyword in text for keyword in EVENT_KEYWORDS):
+        return "event"
+    if any(keyword in text for keyword in QUERY_KEYWORDS):
+        return "query"
+    return "task"
+
+
+def extract_event_fields(instruction: str) -> Dict[str, str]:
+    """
+    Extract time and action from event-like instructions.
+    
+    Returns: {"time": "HH:MM" or "unspecified", "action": "..."}
+    """
+    # Time extraction patterns
+    time_patterns = [
+        (r"\bat\s+midnight\b", "00:00"),
+        (r"\bat\s+noon\b", "12:00"),
+        (r"\bat\s+(\d{1,2}):(\d{2})\s*(am|pm)?", None),  # Custom parsing
+        (r"\bat\s+(\d{1,2})\s*(am|pm)", None),  # e.g., "at 3pm"
+    ]
+    
+    time_value = "unspecified"
+    
+    # Try midnight/noon first
+    if re.search(r"\bat\s+midnight\b", instruction, re.IGNORECASE):
+        time_value = "00:00"
+    elif re.search(r"\bat\s+noon\b", instruction, re.IGNORECASE):
+        time_value = "12:00"
+    else:
+        # Try HH:MM pattern
+        match = re.search(
+            r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
+            instruction, re.IGNORECASE
+        )
+        if match:
+            hour = int(match.group(1))
+            minute = int(match.group(2) or 0)
+            ampm = (match.group(3) or "").lower()
+            
+            if ampm == "pm" and hour < 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+                
+            time_value = f"{hour:02d}:{minute:02d}"
+    
+    # Extract action by removing time phrase and common prefixes
+    text = re.sub(
+        r"(?i)\bat\s+(midnight|noon|\d{1,2}(:\d{2})?\s*(am|pm)?)",
+        "", instruction
+    )
+    text = re.sub(r"(?i)\b(remind me to|remind me|please|can you)\b", "", text)
+    action = text.strip(" ,.")
+    
+    return {
+        "time": time_value,
+        "action": action or instruction.strip()
+    }
+
+
+def quick_parse(instruction: str) -> Tuple[str, Dict[str, str]]:
+    """
+    Quick deterministic parsing without LLM.
+    
+    Returns: (concept_kind, fields_dict)
+    
+    Example:
+        kind, fields = quick_parse("Remind me at 3pm to call mom")
+        # kind = "event"
+        # fields = {"time": "15:00", "action": "call mom"}
+    """
+    kind = infer_concept_kind(instruction)
+    
+    if kind == "event":
+        fields = extract_event_fields(instruction)
+    else:
+        fields = {"description": instruction}
+    
+    return kind, fields
+```
+
+Integration in agent:
+
+```python
+# In agent._classify_intent() or as preprocessing:
+from src.personal_assistant.deterministic_parser import quick_parse, infer_concept_kind
+
+def _classify_intent_with_fallback(self, user_request: str) -> str:
+    """Use deterministic parser first, LLM for ambiguous cases."""
+    
+    # Try deterministic first (fast, free)
+    kind = infer_concept_kind(user_request)
+    
+    # For obvious cases, skip LLM
+    if kind in ("event", "task") and self._is_obvious_intent(user_request):
+        return kind
+    
+    # Fall back to LLM for complex/ambiguous cases
+    return self._llm_classify_intent(user_request)
+```
+
+
+================================================================================
+PART 4: IMMUTABLE PROTOTYPE MODEL (2/3 MODELS - MEDIUM PRIORITY)  
+================================================================================
+
+SOURCE CONCEPT: src/knowshowgo/models.py (frozen Prototype)
+TARGET: Refactor src/personal_assistant/ksg.py
+
+WHAT TO PORT:
+  - Frozen dataclass pattern for Prototypes
+  - previous_version_id for version chains
+  - Clear immutable vs mutable separation
+
+WHY (CONSENSUS REASONING):
+  - Claude: "prevent accidental schema corruption, enable safe concurrent access"
+  - Gemini: "explicit versioning supports schema evolution"
+  - GPT-5.2: "the immutability/versioning idea is good" (but notes data model conflict)
+
+-------------------------------------------------------------------------------
+AGENT INSTRUCTIONS: Refactor ksg.py prototypes
+-------------------------------------------------------------------------------
+
+This is a more invasive change. Approach carefully:
+
+STEP 1: Create ImmutablePrototype class (can coexist with current Node)
+
+```python
+# In src/personal_assistant/ksg.py, add:
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+@dataclass(frozen=True)
+class ImmutablePrototype:
+    """
+    Immutable prototype definition. Edits create new versions.
+    
+    Design principle: Prototypes are schemas that should never change
+    in place. Any modification creates a new version linked via
+    previous_version_id.
+    """
+    uuid: str
+    label: str
+    summary: str
+    properties: tuple  # Immutable tuple of property names
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_by: Optional[str] = None
+    previous_version_id: Optional[str] = None
+    status: str = "active"
+    
+    def evolve(self, **changes) -> "ImmutablePrototype":
+        """Create new version with changes, linking to this as previous."""
+        from dataclasses import replace
+        return replace(
+            self,
+            uuid=str(uuid.uuid4()),
+            previous_version_id=self.uuid,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            **changes
+        )
+```
+
+STEP 2: Use in prototype seeding
+
+```python
+# Modify ensure_seeds() to use immutable prototypes internally
+# while still writing compatible Node documents to storage
+```
+
+Note: Full migration requires careful planning. Start by introducing the
+immutable type alongside existing code, then gradually migrate.
+
+
+================================================================================
+PART 5: INTEGRATION ARCHITECTURE
+================================================================================
+
+HOW THESE COMPONENTS FIT TOGETHER (per GPT-5.2 architecture guidance):
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           AGENT LOOP (agent.py)                              │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │  1. Receive user request                                                 ││
+│  │  2. Deterministic parse (quick_parse) → obvious intent?                 ││
+│  │     - Yes: Skip LLM, create Task/Event directly                         ││
+│  │     - No: Use LLM for planning                                          ││
+│  │  3. Memory search with activation boost                                  ││
+│  │  4. Plan execution                                                       ││
+│  │  5. Reinforce working memory on selection                               ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────────────┘
+          │                    │                         │
+          ▼                    ▼                         ▼
+┌─────────────────┐  ┌─────────────────────┐  ┌─────────────────────────────┐
+│ WorkingMemory   │  │  Semantic Memory    │  │  AsyncReplicator            │
+│ (session-scope) │  │  (Arango/Chroma)    │  │  (background persistence)   │
+│                 │  │                     │  │                             │
+│ - link()        │  │ - search()          │  │ - enqueue(EdgeUpdate)       │
+│ - access()      │  │ - upsert()          │  │ - worker -> Arango          │
+│ - boost scores  │  │ - KSG operations    │  │ - flush semantics           │
+└─────────────────┘  └─────────────────────┘  └─────────────────────────────┘
+         │                                              │
+         └──────────────────────────────────────────────┘
+                    (optional: persist activation to edges)
+```
+
+KEY ARCHITECTURAL PRINCIPLES:
+
+1. SEPARATION: Working memory is SESSION-SCOPED, semantic memory is GLOBAL
+   - Don't pollute long-term knowledge with transient activation
+   - Optionally persist high-activation patterns to edges for learning
+
+2. LAYERING: Each component has single responsibility
+   - WorkingMemoryGraph: Reinforcement logic only
+   - AsyncReplicator: Queue/persistence only  
+   - DeterministicParser: Rule-based classification only
+   - Agent: Orchestration only
+
+3. OPTIONAL PERSISTENCE: Activation can be ephemeral or persisted
+   - Dev/test: Working memory only (no persistence)
+   - Production: Optionally persist via AsyncReplicator
+
+
+================================================================================
+MIGRATION CHECKLIST FOR AGENT
+================================================================================
+
+Execute in order. Each step should be independently testable.
+
+[ ] STEP A: Add working_memory.py
+    - Copy code from Part 1
+    - Run: pytest tests/test_working_memory.py
+    - Commit: "feat: add WorkingMemoryGraph for activation tracking"
+
+[ ] STEP B: Add async_replicator.py
+    - Copy code from Part 2
+    - Run: pytest tests/test_async_replicator.py
+    - Commit: "feat: add AsyncReplicator for background persistence"
+
+[ ] STEP C: Add deterministic_parser.py
+    - Copy code from Part 3
+    - Run: pytest tests/test_deterministic_parser.py
+    - Commit: "feat: add deterministic parser for offline/fast classification"
+
+[ ] STEP D: Integrate WorkingMemory into agent
+    - Modify agent.py __init__ to create WorkingMemoryGraph
+    - Add _boost_by_activation() to search results
+    - Add _reinforce_selection() when concepts are used
+    - Run: pytest tests/test_agent*.py
+    - Commit: "feat: integrate working memory for retrieval boosting"
+
+[ ] STEP E: Wire AsyncReplicator (optional)
+    - Add ASYNC_REPLICATION env flag
+    - Start replicator in service.py startup
+    - Connect working memory reinforcement to persistence
+    - Run: pytest tests/test_integration*.py
+    - Commit: "feat: enable async replication for activation persistence"
+
+[ ] STEP F: Add deterministic fallback to intent classification
+    - Modify _classify_intent() to try rules first
+    - Add env flag: SKIP_LLM_FOR_OBVIOUS_INTENTS
+    - Run: pytest tests/test_agent*.py
+    - Commit: "feat: add deterministic fallback for intent classification"
+
+
+================================================================================
+ENVIRONMENT VARIABLES (NEW)
+================================================================================
+
+Add to .env.example:
+
+```bash
+# Working Memory & Activation
+WORKING_MEMORY_REINFORCE_DELTA=1.0
+WORKING_MEMORY_MAX_WEIGHT=100.0
+
+# Async Replication (optional persistence of activation weights)
+ASYNC_REPLICATION=0  # Set to 1 to enable background persistence
+
+# Deterministic Parser
+SKIP_LLM_FOR_OBVIOUS_INTENTS=0  # Set to 1 to use rule-based classification first
+```
+
+
+================================================================================
+VERIFICATION COMMANDS
+================================================================================
+
+After completing migration, verify with:
+
+```bash
+# Run all new tests
+pytest tests/test_working_memory.py tests/test_async_replicator.py tests/test_deterministic_parser.py -v
+
+# Run full test suite (ensure no regressions)
+pytest --tb=short
+
+# Test activation boost manually
+python -c "
+from src.personal_assistant.working_memory import WorkingMemoryGraph
+wm = WorkingMemoryGraph()
+wm.link('query', 'proc1', 5.0)
+wm.link('query', 'proc2', 2.0)
+print(f'proc1 boost: {wm.get_activation_boost(\"proc1\")}')
+print(f'proc2 boost: {wm.get_activation_boost(\"proc2\")}')
+"
+```
+
+
+================================================================================
+END OF SALVAGE PLAN FOR osl-agent-prototype
+================================================================================

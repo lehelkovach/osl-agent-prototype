@@ -31,3 +31,35 @@
 - For web automation plans: LLM should produce JSON commands; ask for missing credentials; associate URL seeds to stored credentials in memory (vault-like) when applicable. Query preferences before autofill if stored.
 - Queueing: LLM can emit `queue.enqueue` with priority/due/not_before or delay_seconds to push work onto the priority queue; `queue.update` adjusts priorities/status later.
 - If a skill is required by name, open its `SKILL.md` and follow instructions. Use skills only when triggered.
+
+---
+
+## Salvage refactor plan (2026-01-14)
+
+Reference doc (kept verbatim in this repo): `docs/salvage-osl-agent-prototype.txt`.
+
+### What to keep (do not churn)
+- Keep `MemoryTools` as the swap boundary (Arango/Chroma/in-memory) and keep/extend the contract tests.
+- Keep the JSON-first planning contract + legacy `{intent, steps}` fallback parsing.
+- Keep the current CPMS + autofill direction and the “reuse-first patterns” milestone path from `docs/development-plan.md`.
+
+### What to change (architecture)
+- Introduce a **session-scoped activation layer** (“working memory”) that boosts retrieval/ranking *without* polluting long-term semantic memory.
+- Add an optional **async replication/flush queue** for background persistence of selected “activation” or edge updates (behind a flag).
+- Add a **deterministic parser** as a first-pass classifier for obvious Task/Event/Reminder-style requests (skip LLM when safe).
+- Defer “immutable prototype model” until after the above is stable; implement as *additive* (new type + version chains) before attempting any migration.
+
+### What to add next (in order; each step independently testable)
+- Step A: Add `src/personal_assistant/working_memory.py` + `tests/test_working_memory.py` (port WorkingMemoryGraph idea; NetworkX-backed).
+- Step B: Add `src/personal_assistant/async_replicator.py` + tests (queue + worker pattern). Keep it optional/off by default.
+- Step C: Add `src/personal_assistant/deterministic_parser.py` + tests (rule-based kind inference + basic field extraction).
+- Step D: Integrate working memory into the agent retrieval path:
+  - Boost memory search results by activation.
+  - Reinforce activation when a result is selected/executed.
+  - Keep the activation graph separate from semantic storage; only persist via async replicator if explicitly enabled.
+- Step E (later): Add immutable prototype/version-chain model for KSG seeding and schema evolution (minimal surface area first).
+
+### Guardrails
+- Avoid mixing activation weights into the primary “semantic” score; compute a separate `_activation_boost` and combine via a small tunable multiplier.
+- Prefer env flags for behavior changes (e.g., deterministic intent shortcut, async replication).
+- Keep refactors incremental: land new modules + tests before wiring them into `agent.py`.
