@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Union
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -32,6 +32,49 @@ class KnowShowGoAPI:
         self.memory = memory
         self.embed_fn = embed_fn
         self.orm = KSGORM(memory)  # ORM for prototype-based object hydration
+
+    def _normalize_result(self, result: Any) -> Dict[str, Any]:
+        """Normalize a search result to a dict."""
+        if isinstance(result, dict):
+            return result
+        if hasattr(result, "__dict__"):
+            return result.__dict__
+        return {}
+
+    def _is_prototype(self, result: Dict[str, Any]) -> bool:
+        """Check if a result is a prototype (kind=Prototype or isPrototype=True)."""
+        kind = result.get("kind")
+        if kind == "Prototype":
+            return True
+        props = result.get("props") or {}
+        return props.get("isPrototype") is True
+
+    def _find_prototype_uuid(self, name: str, top_k: int = 5) -> Optional[str]:
+        """Find a prototype UUID by name with fallback logic."""
+        # First try with topic filter
+        results = self.memory.search(name, top_k=top_k, filters={"kind": "topic"})
+        candidates = []
+        for result in results:
+            normalized = self._normalize_result(result)
+            if self._is_prototype(normalized):
+                candidates.append(normalized)
+        # Fallback: search without filter
+        if not candidates:
+            results = self.memory.search(name, top_k=top_k)
+            for result in results:
+                normalized = self._normalize_result(result)
+                if self._is_prototype(normalized):
+                    candidates.append(normalized)
+        if not candidates:
+            return None
+        # Prefer exact name match
+        for candidate in candidates:
+            labels = candidate.get("labels") or []
+            props = candidate.get("props") or {}
+            if name == props.get("label") or name == props.get("name") or name in labels:
+                return candidate.get("uuid")
+        # Return first candidate if no exact match
+        return candidates[0].get("uuid")
 
     def create_prototype(
         self,
