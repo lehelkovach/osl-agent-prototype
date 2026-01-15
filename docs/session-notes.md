@@ -1,5 +1,61 @@
 # Session Notes
 
+## 2026-01-15: SafeShellExecutor with Sandbox and Rollback
+
+### Changes Made
+- Created `SafeShellExecutor` for safe command execution
+- Added command whitelist/blacklist filtering
+- Added file change tracking with snapshot and rollback
+- Added temporary directory sandboxing
+- Added `TestShellRunner` for integration tests
+
+### Safety Features
+```python
+# Blocked commands (dangerous operations)
+- rm -rf /
+- fork bombs
+- curl|bash, wget|bash
+- sudo (configurable)
+
+# File tracking (for rollback)
+- cp, mv, rm, mkdir, rmdir, touch
+- redirects (>, >>)
+- in-place edits (sed -i, awk -i)
+
+# Sandboxing
+- Unsafe commands run in temp directories
+- Changes isolated from real filesystem
+```
+
+### Usage
+```python
+from src.personal_assistant.safe_shell import create_safe_shell, TestShellRunner
+
+# Create safe shell
+shell = create_safe_shell()
+
+# Preview command safety
+preview = shell.preview_command("rm file.txt")
+# {'blocked': False, 'is_safe': False, 'modifies_files': True, ...}
+
+# Run with safety
+result = shell.run("echo hello", dry_run=False)
+
+# Run in sandbox
+result = shell.run_in_sandbox("touch newfile.txt")
+
+# Test runner with auto-cleanup
+with TestShellRunner() as runner:
+    result = runner.run_and_verify("ls", expected_returncode=0)
+    # Auto-rollback on exit
+```
+
+### Test Results
+- **518 tests collected** (38 new safe shell tests)
+- All tool tests passing
+
+---
+
 ## 2026-01-15: KnowShowGo Separate Service Implementation
 
 ### Changes Made
