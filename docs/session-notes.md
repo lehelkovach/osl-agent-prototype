@@ -1,5 +1,47 @@
 # Session Notes
 
+## 2026-01-15: KnowShowGo Separate Service Implementation
+
+### Changes Made
+- Created `services/knowshowgo/` directory with FastAPI service
+- Implemented `KnowShowGoClient` for HTTP communication with service
+- Added `MockKnowShowGoClient` for testing without running service
+- Created `KnowShowGoAdapter` for seamless switching between embedded and service mode
+- Added 78 new tests for service, client, and adapter
+
+### Architecture
+```
+Agent → KnowShowGoAdapter
+           ↓
+    [Service Available?]
+           ↓
+    Yes: KnowShowGoClient → HTTP → KnowShowGo Service (port 8001)
+    No: Embedded KnowShowGoAPI (fallback)
+```
+
+### Files Created
+- `services/knowshowgo/service.py` - FastAPI app with all KnowShowGo endpoints
+- `services/knowshowgo/client.py` - HTTP client + mock client
+- `services/knowshowgo/models.py` - Pydantic models for API
+- `src/personal_assistant/knowshowgo_adapter.py` - Adapter for backend switching
+- `scripts/start_knowshowgo_service.sh` - Service startup script
+
+### Test Results
+- **468 tests passing** (all KnowShowGo tests included)
+- 12 skipped (integration tests requiring external services)
+- Service verified running on port 8001
+
+### Usage
+```bash
+# Start service
+./scripts/start_knowshowgo_service.sh
+
+# Or set env var for agent to use service
+export KNOWSHOWGO_URL=http://localhost:8001
+```
+
+---
+
 ## 2026-01-15: Live Mode Testing Complete
 
 ### Changes Made
