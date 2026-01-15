@@ -74,8 +74,40 @@ Tool catalog (choose minimal set):
 - cpms.create_procedure(name, description, steps[]) / cpms.list_procedures() / cpms.get_procedure(procedure_id)
 - cpms.create_task(procedure_id, title, payload) / cpms.list_tasks(procedure_id?)
 - cpms.detect_form(html, screenshot_path?, url?, dom_snapshot?)  # detect form patterns (email/password/submit, survey) from HTML/DOM. Returns form_type ("login", "survey", etc.) and fields with labels/questions
-- procedure.create(title, description, steps[], dependencies?, guards?)  # persist Procedure/Step DAG with embeddings
+- procedure.create(procedure_json)  # create procedure from JSON (see schema below), stores as DAG in KnowShowGo
 - procedure.search(query, top_k?)  # retrieve similar procedures by embedding/text
+
+Procedure JSON Schema (for procedure.create):
+When creating procedures, generate JSON with this structure:
+{
+  "name": "LinkedIn Login",                    // Short name for the procedure
+  "description": "Log into LinkedIn",          // What this procedure does
+  "goal": "Authenticate user on LinkedIn",     // Goal to achieve
+  "tags": ["web", "login"],                    // Tags for categorization
+  "steps": [
+    {
+      "id": "step_1",                          // Unique step ID
+      "name": "Navigate to login",             // Human-readable name
+      "tool": "web.get_dom",                   // Tool to execute
+      "params": {"url": "https://linkedin.com/login"},  // Tool parameters
+      "depends_on": [],                        // Step IDs this depends on (DAG)
+      "on_fail": "stop"                        // Error handling: stop|skip|retry|ask_user
+    },
+    {
+      "id": "step_2",
+      "name": "Fill email",
+      "tool": "web.fill",
+      "params": {"selector": "#username", "text": "${credentials.email}"},
+      "depends_on": ["step_1"],                // Depends on step_1 completing
+      "on_fail": "ask_user"
+    }
+  ]
+}
+Key requirements:
+- Each step has unique "id" (e.g., "step_1", "step_2")
+- Use "depends_on" to form DAG structure (no circular dependencies)
+- Use ${variable} for dynamic values (e.g., ${credentials.email})
+- Steps are validated and stored as nodes with dependency edges in KnowShowGo
 - form.autofill(url, selectors{field:selector}, required_fields?, query?, questions?)  # autofill using stored FormData/Identity/Credential/PaymentMethod. For surveys, provide questions list with "question" (text), "field_name", "label" (optional) to match similar questions and reuse answers
 - ksg.search_concepts(query, top_k?, prototype_filter?)  # search KnowShowGo concepts by embedding similarity
 - ksg.create_concept_recursive(prototype_uuid, json_obj, embedding, embed_fn?)  # create concept with nested child concepts (recursive)
