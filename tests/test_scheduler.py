@@ -33,10 +33,9 @@ class TestScheduler(unittest.TestCase):
         # Task created and enqueued
         self.assertEqual(len(tasks.tasks), 1)
         self.assertEqual(tasks.tasks[0]["title"], "start alarm playback service")
-        queue = queue_manager.ensure_queue(
-            provenance=Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace")
-        )
-        self.assertEqual(len(queue.props["items"]), 1)
+        prov = Provenance("user", datetime.now(timezone.utc).isoformat(), 1.0, "trace")
+        queue_items = queue_manager.list_items(prov)
+        self.assertEqual(len(queue_items), 1)
         # Memory node stored with DAG and embedding
         task_nodes = [n for n in memory.nodes.values() if n.kind == "Task"]
         self.assertEqual(len(task_nodes), 1)
