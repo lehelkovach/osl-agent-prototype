@@ -143,25 +143,47 @@ class PersonalAssistantAgent:
             has_embedding=query_embedding is not None,
             trace_id=provenance.trace_id,
         )
-        # Procedure reuse (embedding-aware)
-        # #region agent log
-        import json
-        import time
+        # Procedure reuse (embedding-aware): prefer KnowShowGo Procedure concepts,
+        # and also include legacy ProcedureBuilder results for backward compatibility.
+        proc_matches: List[Dict[str, Any]] = []
         try:
-            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps({"location": "agent.py:106", "message": "searching for procedures", "data": {"query": user_request[:100], "has_procedure_builder": self.procedure_builder is not None}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-recall", "hypothesisId": "D"}) + "\n")
+            proc_proto_uuid = self.ksg.find_prototype_uuid("Procedure") if self.ksg else None
+            if proc_proto_uuid:
+                ksg_raw = self.memory.search(
+                    user_request,
+                    top_k=3,
+                    filters={"kind": "Concept"},
+                    query_embedding=query_embedding,
+                )
+                for r in ksg_raw:
+                    rr = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+                    props = rr.get("props", {}) if isinstance(rr, dict) else {}
+                    if props.get("prototype_uuid") == proc_proto_uuid:
+                        proc_matches.append(rr)
         except Exception:
             pass
-        # #endregion
+
         if self.procedure_builder:
-            proc_matches = self.procedure_builder.search_procedures(user_request, top_k=3)
-            # #region agent log
             try:
-                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"location": "agent.py:109", "message": "procedure search results", "data": {"matches_count": len(proc_matches), "match_titles": [m.get("title", "unknown")[:50] for m in proc_matches[:3]]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-recall", "hypothesisId": "D"}) + "\n")
+                proc_matches.extend(self.procedure_builder.search_procedures(user_request, top_k=3))
             except Exception:
                 pass
-            # #endregion
+
+        # Also include ProcedureManager/graph-native Procedure nodes if present (newer path).
+        try:
+            proc_nodes = self.memory.search(
+                user_request,
+                top_k=3,
+                filters={"kind": "Procedure"},
+                query_embedding=query_embedding,
+            )
+            for r in proc_nodes:
+                rr = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+                proc_matches.append(rr)
+        except Exception:
+            pass
+
+        if proc_matches:
             self._last_procedure_matches = proc_matches
             memory_results.extend(proc_matches)
             self._emit(
@@ -172,8 +194,6 @@ class PersonalAssistantAgent:
                     "trace_id": provenance.trace_id,
                 },
             )
-        else:
-            proc_matches = []
 
         # Concept search in KnowShowGo (embedding-based)
         concept_matches = []
@@ -963,37 +983,29 @@ class PersonalAssistantAgent:
                     else:
                         res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
                 elif tool_name == "procedure.create":
-                    # #region agent log
-                    try:
-                        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                            f.write(json.dumps({"location": "agent.py:827", "message": "procedure.create called", "data": {"title": params.get("title") or params.get("name", "unknown")[:50], "steps_count": len(params.get("steps", [])), "use_cpms": self.use_cpms_for_procs}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-create", "hypothesisId": "E"}) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
-                    
                     # Check if params match the new JSON schema format (has "id" in steps)
                     is_new_schema = (
-                        "steps" in params and
-                        isinstance(params["steps"], list) and
-                        len(params["steps"]) > 0 and
-                        "id" in params["steps"][0]
+                        "steps" in params
+                        and isinstance(params.get("steps"), list)
+                        and len(params.get("steps") or []) > 0
+                        and isinstance((params.get("steps") or [None])[0], dict)
+                        and "id" in (params.get("steps") or [{}])[0]
                     )
-                    
+
                     if is_new_schema:
                         # Use ProcedureManager for new JSON schema format
                         try:
                             proc_manager = ProcedureManager(
                                 memory=self.memory,
                                 embed_fn=self._embed_text,
-                                ksg=self.ksg
+                                ksg=self.ksg,
                             )
                             procedure_result = proc_manager.create_from_json(params, provenance=provenance)
                             res = {
                                 "status": "success",
                                 "procedure": procedure_result,
-                                "format": "json_dag"
+                                "format": "json_dag",
                             }
-                            logger.info(f"Created procedure DAG: {procedure_result.get('procedure_uuid')}")
                         except ValueError as ve:
                             res = {"status": "error", "error": f"Invalid procedure JSON: {ve}"}
                         except Exception as exc:
@@ -1008,6 +1020,8 @@ class PersonalAssistantAgent:
                         if "steps" in norm_params:
                             norm_steps = []
                             for idx, st in enumerate(norm_params.get("steps") or []):
+                                if not isinstance(st, dict):
+                                    continue
                                 norm_steps.append(
                                     {
                                         "title": st.get("title") or st.get("tool") or f"step-{idx}",
@@ -1017,25 +1031,8 @@ class PersonalAssistantAgent:
                                     }
                                 )
                             norm_params["steps"] = norm_steps
-                        # #region agent log
-                        try:
-                            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                                f.write(json.dumps({"location": "agent.py:848", "message": "creating procedure via ProcedureBuilder", "data": {"title": norm_params.get("title", "unknown")[:50]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-create", "hypothesisId": "E"}) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
                         procedure_result = self.procedure_builder.create_procedure(**norm_params)
-                        # #region agent log
-                        try:
-                            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
-                                f.write(json.dumps({"location": "agent.py:850", "message": "procedure created successfully", "data": {"procedure_uuid": procedure_result.get("procedure_uuid"), "steps_count": len(procedure_result.get("step_uuids", []))}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-create", "hypothesisId": "E"}) + "\n")
-                        except Exception:
-                            pass
-                        # #endregion
-                        res = {
-                            "status": "success",
-                            "procedure": procedure_result,
-                        }
+                        res = {"status": "success", "procedure": procedure_result, "format": "legacy"}
                     else:
                         res = {"status": "error", "error": "ProcedureBuilder not configured"}
                 elif tool_name == "procedure.search":
@@ -1046,13 +1043,31 @@ class PersonalAssistantAgent:
                             res = {"status": "error", "error": str(exc)}
                         else:
                             res = {"status": "success", "procedures": procs}
-                    elif self.procedure_builder:
-                        res = {
-                            "status": "success",
-                            "procedures": self.procedure_builder.search_procedures(**params),
-                        }
                     else:
-                        res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                        # Prefer KnowShowGo concepts (Procedure DAGs) and optionally include legacy ProcedureBuilder results.
+                        query = params.get("query") or params.get("text") or ""
+                        top_k = int(params.get("top_k") or 5)
+                        ksg_matches: List[Dict[str, Any]] = []
+                        try:
+                            proc_proto_uuid = self.ksg.find_prototype_uuid("Procedure")
+                            if proc_proto_uuid:
+                                qemb = self._embed_text(query) if query else None
+                                raw = self.memory.search(query, top_k=top_k, filters={"kind": "Concept"}, query_embedding=qemb)
+                                for r in raw:
+                                    rr = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+                                    props = rr.get("props", {}) if isinstance(rr, dict) else {}
+                                    if props.get("prototype_uuid") == proc_proto_uuid:
+                                        ksg_matches.append(rr)
+                        except Exception:
+                            ksg_matches = []
+
+                        legacy_matches: List[Dict[str, Any]] = []
+                        if self.procedure_builder:
+                            try:
+                                legacy_matches = self.procedure_builder.search_procedures(query=query, top_k=top_k)
+                            except Exception:
+                                legacy_matches = []
+                        res = {"status": "success", "procedures": ksg_matches + legacy_matches}
                 elif tool_name == "ksg.create_prototype":
                     try:
                         proto_uuid = self.ksg.create_prototype(**params)
@@ -2159,6 +2174,79 @@ class PersonalAssistantAgent:
         steps_with_order.sort(key=lambda t: t[0])
         return [s for _, s in steps_with_order]
 
+    def _load_ksg_procedure_steps(self, concept_uuid: str) -> List[Dict[str, Any]]:
+        """
+        Hydrate stored procedure steps from KnowShowGo (Concept + has_step edges).
+
+        Supports two representations:
+        - Preferred: child Concept nodes linked by has_step edges (created via ksg.create_concept_recursive)
+        - Fallback: props["steps"] list stored directly on the Procedure concept
+        """
+        if not concept_uuid:
+            return []
+
+        # 1) Preferred: load child concepts via has_step edges
+        try:
+            if hasattr(self.memory, "edges") and hasattr(self.memory, "nodes"):
+                edges = [
+                    e
+                    for e in self.memory.edges.values()
+                    if getattr(e, "from_node", None) == concept_uuid and getattr(e, "rel", None) == "has_step"
+                ]
+                if edges:
+                    edges.sort(key=lambda e: (getattr(e, "props", {}) or {}).get("order", 0))
+                    steps: List[Dict[str, Any]] = []
+                    for edge in edges:
+                        child = self.memory.nodes.get(edge.to_node)
+                        if not child:
+                            continue
+                        props = child.get("props", {}) if isinstance(child, dict) else getattr(child, "props", {})
+                        tool = props.get("tool")
+                        params = props.get("params") or {}
+                        if not tool and isinstance(props.get("payload"), dict):
+                            tool = props["payload"].get("tool")
+                            params = props["payload"].get("params") or params
+                        if tool:
+                            steps.append(
+                                {
+                                    "tool": tool,
+                                    "params": params if isinstance(params, dict) else {},
+                                    "comment": f"Reused KSG step {props.get('name') or props.get('title') or tool}",
+                                }
+                            )
+                    if steps:
+                        return steps
+        except Exception:
+            pass
+
+        # 2) Fallback: load from parent concept props["steps"]
+        try:
+            parent = self.memory.nodes.get(concept_uuid) if hasattr(self.memory, "nodes") else None
+            if not parent:
+                return []
+            parent_props = parent.get("props", {}) if isinstance(parent, dict) else getattr(parent, "props", {})
+            raw_steps = parent_props.get("steps") or []
+            steps_with_order = []
+            for idx, st in enumerate(raw_steps):
+                if not isinstance(st, dict):
+                    continue
+                tool = st.get("tool")
+                params = st.get("params") or {}
+                steps_with_order.append(
+                    (
+                        st.get("order", idx),
+                        {
+                            "tool": tool,
+                            "params": params if isinstance(params, dict) else {},
+                            "comment": f"Reused KSG step {st.get('title') or tool or f'step-{idx}'}",
+                        },
+                    )
+                )
+            steps_with_order.sort(key=lambda t: t[0])
+            return [s for _, s in steps_with_order if s.get("tool")]
+        except Exception:
+            return []
+
     def _update_procedure_selectors(self, proc_uuid: str, execution_results: Dict[str, Any]) -> None:
         """
         If a reused procedure succeeded using fallback selectors, persist those selectors back into the stored Step.
@@ -2620,13 +2708,21 @@ class PersonalAssistantAgent:
         """
         if proc_matches:
             proc = proc_matches[0]
+            proc_kind = proc.get("kind") if isinstance(proc, dict) else None
+            proc_props = proc.get("props", {}) if isinstance(proc, dict) else {}
             proc_uuid = proc.get("uuid")
             
             # Reinforce working memory when we select a procedure for reuse
             if proc_uuid and trace_id:
                 self._reinforce_selection(trace_id, proc_uuid, seed_weight=2.0)
-            
-            steps = self._load_procedure_steps(proc)
+
+            # Prefer KSG Procedure concepts when available.
+            if proc_kind == "Concept" and proc.get("uuid"):
+                steps = self._load_ksg_procedure_steps(proc["uuid"])
+                display_name = proc_props.get("name") or proc_props.get("title") or "Procedure"
+            else:
+                steps = self._load_procedure_steps(proc)
+                display_name = proc_props.get("title") or proc_props.get("name") or "Procedure"
             if steps:
                 if len(steps) <= 1:
                     return {
@@ -2635,19 +2731,19 @@ class PersonalAssistantAgent:
                             {
                                 "tool": "procedure.search",
                                 "params": {"query": user_request, "top_k": 3},
-                                "comment": f"Reuse procedure match {proc.get('props', {}).get('title', '')}",
+                                "comment": f"Reuse procedure match {display_name}",
                             }
                         ],
                         "reuse": True,
                         "procedure_uuid": proc.get("uuid"),
-                        "raw_llm": f"Reusing stored procedure {proc.get('props', {}).get('title', '')}".strip(),
+                        "raw_llm": f"Reusing stored procedure {display_name}".strip(),
                     }
                 return {
                     "intent": intent,
                     "steps": steps,
                     "reuse": True,
                     "procedure_uuid": proc.get("uuid"),
-                    "raw_llm": f"Reusing stored procedure {proc.get('props', {}).get('title', '')}".strip(),
+                    "raw_llm": f"Reusing stored procedure {display_name}".strip(),
                 }
             # Fallback to search if we cannot hydrate steps
             return {
@@ -2656,7 +2752,7 @@ class PersonalAssistantAgent:
                     {
                         "tool": "procedure.search",
                         "params": {"query": user_request, "top_k": 3},
-                        "comment": f"Reuse procedure match {proc.get('props', {}).get('title', '')}",
+                        "comment": f"Reuse procedure match {display_name}",
                     }
                 ],
                 "reuse": True,

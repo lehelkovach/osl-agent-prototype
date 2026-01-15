@@ -128,6 +128,60 @@ class KnowShowGoAPI:
         # Return first candidate if no exact match
         return candidates[0].get("uuid")
 
+    def find_prototype_uuid(self, name: str) -> Optional[str]:
+        """
+        Best-effort lookup for a Prototype node by its props.name.
+        Returns the prototype UUID if found.
+        """
+        try:
+            results = self.memory.search(name, top_k=20, filters={"kind": "Prototype"}, query_embedding=None)
+        except Exception:
+            results = []
+        for r in results:
+            if isinstance(r, dict):
+                props = r.get("props", {})
+                if props.get("name") == name:
+                    return r.get("uuid")
+            else:
+                if getattr(r, "kind", None) == "Prototype" and getattr(r, "props", {}).get("name") == name:
+                    return getattr(r, "uuid", None)
+        # Fallback: direct scan (mock/in-memory backends)
+        nodes = getattr(self.memory, "nodes", None)
+        if isinstance(nodes, dict):
+            for node in nodes.values():
+                if getattr(node, "kind", None) == "Prototype" and getattr(node, "props", {}).get("name") == name:
+                    return getattr(node, "uuid", None)
+        return None
+
+    def ensure_prototype(
+        self,
+        name: str,
+        description: str,
+        context: str,
+        labels: Optional[List[str]] = None,
+        provenance: Optional[Provenance] = None,
+    ) -> str:
+        """
+        Ensure a Prototype exists (by props.name), creating it if missing.
+        """
+        existing = self.find_prototype_uuid(name)
+        if existing:
+            return existing
+        emb: List[float] = []
+        if self.embed_fn:
+            try:
+                emb = self.embed_fn(f"{name} {description} {context}")
+            except Exception:
+                emb = []
+        return self.create_prototype(
+            name=name,
+            description=description,
+            context=context,
+            labels=labels or ["prototype", name.lower()],
+            embedding=emb or [0.0, 0.0],
+            provenance=provenance,
+        )
+
     def create_prototype(
         self,
         name: str,
@@ -360,12 +414,29 @@ class KnowShowGoAPI:
                             and not nested.get("sub_concepts")
                         )
                         
-                        # Handle nested items that reference prototypes
-                        # Behavior differs by key:
-                        # - "children": Create concepts even if atomic (has tool)
-                        # - "steps": Only create concepts if non-atomic (has nested structure)
+                        # Handle nested items that reference prototypes.
+                        #
+                        # NOTE: For Procedure/DAG persistence, we want *typed* atomic tool-steps
+                        # (e.g., Step prototype) to be representable as child Concept nodes, but
+                        # we still want to avoid recursing atomic *Procedure* steps by default
+                        # (older tests and semantics rely on that).
                         nested_proto_uuid = nested.get("prototype_uuid") or nested.get("prototype")
-                        should_create_concept = nested_proto_uuid and (key == "children" or not is_atomic)
+                        proto_name = None
+                        try:
+                            if nested_proto_uuid and hasattr(self.memory, "nodes"):
+                                pnode = self.memory.nodes.get(nested_proto_uuid)  # type: ignore[attr-defined]
+                                if pnode:
+                                    pprops = pnode.get("props", {}) if isinstance(pnode, dict) else getattr(pnode, "props", {})
+                                    proto_name = pprops.get("name") or pprops.get("protoId")
+                        except Exception:
+                            proto_name = None
+
+                        allow_atomic_step = bool(nested.get("force_concept")) or (proto_name == "Step")
+                        should_create_concept = bool(nested_proto_uuid) and (
+                            key == "children"
+                            or (key == "steps" and (not is_atomic or allow_atomic_step))
+                            or (key not in ("children", "steps") and not is_atomic)
+                        )
                         if should_create_concept:
                             nested_name = nested.get("name") or nested.get("title") or str(nested)
                             try:

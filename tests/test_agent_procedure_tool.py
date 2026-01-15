@@ -26,9 +26,9 @@ class TestAgentProcedureTool(unittest.TestCase):
                 "title": "LinkedIn check",
                 "description": "Check messages and create follow-ups",
                 "steps": [
-                  {"title": "Open LinkedIn"},
-                  {"title": "Open messages"},
-                  {"title": "Create follow-up task"}
+                  {"tool": "web.get", "params": {"url": "https://www.linkedin.com"}},
+                  {"tool": "web.get_dom", "params": {"url": "https://www.linkedin.com/messaging"}},
+                  {"tool": "tasks.create", "params": {"title": "Follow up on recruiter messages", "priority": 3, "due": null, "notes": "", "links": []}}
                 ],
                 "dependencies": [[0,1],[1,2]],
                 "guards": {"2": "only if recruiter messages"}
@@ -49,11 +49,27 @@ class TestAgentProcedureTool(unittest.TestCase):
 
         result = agent.execute_request("create linkedin procedure")
         self.assertEqual(result["execution_results"]["status"], "completed")
+        # Legacy persistence still exists (ProcedureBuilder)
         proc_nodes = [n for n in memory.nodes.values() if n.kind == "Procedure"]
         step_nodes = [n for n in memory.nodes.values() if n.kind == "Step"]
         self.assertEqual(len(proc_nodes), 1)
         self.assertEqual(len(step_nodes), 3)
         self.assertTrue(any(e.rel == "depends_on" for e in memory.edges.values()))
+
+        # Canonical persistence: KnowShowGo Concept DAG (Concept + has_step edges)
+        create_step = result["execution_results"]["steps"][0]
+        concept_uuid = create_step.get("procedure", {}).get("concept_uuid")
+        self.assertIsNotNone(concept_uuid)
+        concept_node = memory.nodes.get(concept_uuid)
+        self.assertIsNotNone(concept_node)
+        self.assertEqual(getattr(concept_node, "kind", None), "Concept")
+        self.assertEqual(concept_node.props.get("name"), "LinkedIn check")
+        # Verify KSG has_step edges exist
+        has_step_edges = [
+            e for e in memory.edges.values()
+            if e.rel == "has_step" and e.from_node == concept_uuid
+        ]
+        self.assertGreaterEqual(len(has_step_edges), 3)
 
     def test_procedure_search_tool(self):
         memory = MockMemoryTools()
