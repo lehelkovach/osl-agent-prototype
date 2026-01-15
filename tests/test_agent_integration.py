@@ -183,11 +183,12 @@ class TestAgentIntegration(unittest.TestCase):
                 }
             ],
         }
-        result = agent._execute_plan(plan_update, Provenance("user", "2024-01-01T00:00:00Z", 1.0, "trace"))
-        queue = agent.queue_manager.ensure_queue(Provenance("user", "2024-01-01T00:00:00Z", 1.0, "trace"))
+        prov = Provenance("user", "2024-01-01T00:00:00Z", 1.0, "trace")
+        result = agent._execute_plan(plan_update, prov)
+        queue_items = agent.queue_manager.list_items(prov)
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(queue.props["items"][0]["priority"], 1)
-        self.assertEqual(queue.props["items"][0]["status"], "in-progress")
+        self.assertEqual(queue_items[0]["priority"], 1)
+        self.assertEqual(queue_items[0]["status"], "in-progress")
 
     def test_linkedin_check_procedure_executes_with_memory(self):
         """Simulate a LinkedIn message check that uses web tools, remembers a procedure, and creates a task."""

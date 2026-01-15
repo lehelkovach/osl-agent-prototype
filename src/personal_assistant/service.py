@@ -507,7 +507,40 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         except Exception:
             pass
         # #endregion
-        return {"plan": result["plan"], "results": result["execution_results"], "events": events}
+        # Sanitize response - use json.dumps with default to handle circular refs
+        def safe_serialize(obj):
+            try:
+                # First pass: convert to JSON string, handling non-serializable objects
+                json_str = json.dumps(obj, default=str, ensure_ascii=False)
+                # Parse back and remove embedding fields
+                parsed = json.loads(json_str)
+                return strip_embeddings(parsed)
+            except Exception:
+                return {"error": "serialization_failed"}
+        
+        def strip_embeddings(obj, seen=None, depth=0):
+            if depth > 50:  # Limit recursion depth
+                return "[truncated]"
+            if seen is None:
+                seen = set()
+            obj_id = id(obj)
+            if obj_id in seen:
+                return "[circular]"
+            if isinstance(obj, dict):
+                seen.add(obj_id)
+                return {k: strip_embeddings(v, seen, depth + 1) for k, v in obj.items()
+                        if k not in ('llm_embedding', 'embedding', 'query_embedding')}
+            elif isinstance(obj, list):
+                if len(obj) > 100 and all(isinstance(x, (int, float)) for x in obj[:5]):
+                    return f"[vector:{len(obj)}d]"
+                seen.add(obj_id)
+                return [strip_embeddings(x, seen, depth + 1) for x in obj]
+            return obj
+        
+        safe_plan = safe_serialize(result["plan"])
+        safe_results = safe_serialize(result["execution_results"])
+        safe_events = safe_serialize(events)
+        return {"plan": safe_plan, "results": safe_results, "events": safe_events}
 
     @app.get("/history", response_class=JSONResponse)
     def history():

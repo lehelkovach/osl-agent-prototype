@@ -81,10 +81,11 @@ class TaskQueueManager:
         queue = self.ensure_queue(provenance)
         
         # Find QueueItem that references this task_uuid
+        # QueueItems are created as Concept nodes with task_uuid prop
         queue_item_node = None
         for node in self.memory.nodes.values():
-            if (node.kind == "topic" and 
-                node.props.get("isPrototype") is False and
+            if (node.kind in ("Concept", "topic") and 
+                node.props.get("isPrototype") is not True and
                 node.props.get("task_uuid") == task_uuid):
                 # Check if it's linked to this queue
                 for edge in self.memory.edges.values():

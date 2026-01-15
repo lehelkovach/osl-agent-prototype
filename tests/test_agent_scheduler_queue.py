@@ -26,7 +26,8 @@ class TestAgentSchedulerQueue(unittest.TestCase):
             openai_client=FakeOpenAIClient(chat_response='{"intent":"inform","steps":[]}', embedding=[0.1, 0.2]),
         )
         qnode = agent.queue_manager.ensure_queue(provenance=agent_prov())
-        self.assertEqual(qnode.kind, "Queue")
+        # Queue uses "topic" kind for KnowShowGo compatibility, but has "Queue" in labels
+        self.assertIn("Queue", qnode.labels)
         # embedding may be None if embed_fn fails, but it should have been attempted
         self.assertTrue(hasattr(qnode, "llm_embedding"))
 
@@ -46,8 +47,8 @@ class TestAgentSchedulerQueue(unittest.TestCase):
         )
         scheduler.add_time_rule(rule)
         scheduler.tick(rule_time)
-        queue = queue_mgr.ensure_queue(provenance=agent_prov())
-        self.assertGreaterEqual(len(queue.props["items"]), 1)
+        queue_items = queue_mgr.list_items(provenance=agent_prov())
+        self.assertGreaterEqual(len(queue_items), 1)
 
 
 def agent_prov():

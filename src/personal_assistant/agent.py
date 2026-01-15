@@ -1262,13 +1262,18 @@ class PersonalAssistantAgent:
                     "trace_id": provenance.trace_id,
                 }
             results.append(res)
+            # Safely log result (avoid circular references)
+            try:
+                safe_result = json.loads(json.dumps(res, default=str))
+            except (TypeError, ValueError):
+                safe_result = {"status": res.get("status") if isinstance(res, dict) else "unknown"}
             self.log.debug(
                 "tool_result",
                 module="agent",
                 function="_execute_plan",
                 tool=tool_name,
                 params=params,
-                result=res,
+                result=safe_result,
                 trace_id=provenance.trace_id,
                 ts=datetime.now(timezone.utc).isoformat(),
             )
