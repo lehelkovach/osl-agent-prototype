@@ -318,3 +318,191 @@ class FormDataRetriever:
                     answer_map[current_field] = best_match
         
         return answer_map
+
+    # Payment/Billing Result Detection Methods
+    
+    PAYMENT_SUCCESS_INDICATORS = [
+        "payment successful", "payment complete", "order confirmed",
+        "thank you for your order", "transaction complete", "purchase complete",
+        "payment accepted", "order placed", "confirmation", "receipt",
+        "success", "✓", "✔", "approved"
+    ]
+    
+    PAYMENT_FAILURE_INDICATORS = [
+        "payment failed", "card declined", "transaction failed",
+        "insufficient funds", "invalid card", "expired card",
+        "payment error", "try again", "unable to process",
+        "declined", "rejected", "error", "✗", "✘", "failed"
+    ]
+    
+    def detect_payment_result(self, page_text: str, page_html: str = "") -> Dict[str, Any]:
+        """
+        Analyze page content to detect if a payment submission succeeded or failed.
+        
+        Args:
+            page_text: Visible text content from the page
+            page_html: Full HTML (optional, for class/id detection)
+            
+        Returns:
+            Dict with:
+                - status: "success" | "failed" | "unknown"
+                - confidence: 0.0-1.0
+                - message: Detected message text
+                - reason: Why it failed (if applicable)
+        """
+        text_lower = page_text.lower()
+        html_lower = page_html.lower() if page_html else ""
+        
+        # Check for success indicators
+        success_score = 0
+        success_matches = []
+        for indicator in self.PAYMENT_SUCCESS_INDICATORS:
+            if indicator in text_lower:
+                success_score += 1
+                success_matches.append(indicator)
+        
+        # Check for failure indicators
+        failure_score = 0
+        failure_matches = []
+        failure_reason = None
+        for indicator in self.PAYMENT_FAILURE_INDICATORS:
+            if indicator in text_lower:
+                failure_score += 1
+                failure_matches.append(indicator)
+                if not failure_reason:
+                    failure_reason = indicator
+        
+        # Check HTML classes for additional signals
+        if html_lower:
+            if any(cls in html_lower for cls in ['class="success"', 'payment-success', 'order-success']):
+                success_score += 2
+            if any(cls in html_lower for cls in ['class="error"', 'payment-failed', 'payment-error']):
+                failure_score += 2
+        
+        # Determine result
+        if success_score > failure_score and success_score >= 1:
+            return {
+                "status": "success",
+                "confidence": min(1.0, success_score * 0.3),
+                "message": f"Payment appears successful. Indicators: {', '.join(success_matches[:3])}",
+                "reason": None
+            }
+        elif failure_score > success_score and failure_score >= 1:
+            return {
+                "status": "failed",
+                "confidence": min(1.0, failure_score * 0.3),
+                "message": f"Payment appears to have failed. Indicators: {', '.join(failure_matches[:3])}",
+                "reason": failure_reason
+            }
+        else:
+            return {
+                "status": "unknown",
+                "confidence": 0.3,
+                "message": "Could not determine payment result from page content",
+                "reason": None
+            }
+    
+    def store_payment_method(
+        self,
+        card_last_four: str,
+        props: Dict[str, Any],
+        is_valid: bool = True,
+        failure_reason: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Store a payment method with its validity status.
+        
+        Args:
+            card_last_four: Last 4 digits of card
+            props: Payment method properties
+            is_valid: Whether the card was accepted
+            failure_reason: Why it was rejected (if applicable)
+            
+        Returns:
+            UUID of the created PaymentMethod node
+        """
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        from src.personal_assistant.models import Node, Provenance
+        
+        node_uuid = str(uuid4())
+        pm_props = {
+            "card_last_four": card_last_four,
+            "is_valid": is_valid,
+            "failure_reason": failure_reason,
+            "tested_at": datetime.now(timezone.utc).isoformat(),
+            **props
+        }
+        
+        try:
+            node = Node(
+                uuid=node_uuid,
+                kind="PaymentMethod",
+                props=pm_props,
+                labels=["PaymentMethod", "valid" if is_valid else "invalid"],
+                llm_embedding=[]
+            )
+            provenance = Provenance(
+                source="payment_test",
+                ts=datetime.now(timezone.utc).isoformat(),
+                confidence=0.9 if is_valid else 0.5,
+                trace_id=f"payment-{node_uuid[:8]}"
+            )
+            self.memory.upsert(node, provenance)
+            return node_uuid
+        except Exception:
+            return None
+    
+    def get_valid_payment_methods(self, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Retrieve payment methods that have been verified as valid.
+        
+        Returns:
+            List of valid PaymentMethod concepts
+        """
+        results = self.memory.search("payment method card", top_k=top_k * 2)
+        valid_methods = []
+        
+        for r in results:
+            props = r.get("props", {}) if isinstance(r, dict) else getattr(r, "props", {})
+            kind = r.get("kind") if isinstance(r, dict) else getattr(r, "kind", None)
+            
+            if kind == "PaymentMethod" and props.get("is_valid", False):
+                valid_methods.append(r if isinstance(r, dict) else r.__dict__)
+        
+        return valid_methods[:top_k]
+    
+    def build_payment_prompt(self, failure_reason: Optional[str] = None) -> str:
+        """
+        Generate a prompt asking the user for payment information.
+        
+        Args:
+            failure_reason: Why the previous attempt failed (if applicable)
+            
+        Returns:
+            Prompt string for the user
+        """
+        base_prompt = "Please provide your payment information:"
+        
+        if failure_reason:
+            if "declined" in failure_reason.lower():
+                base_prompt = f"Your card was declined. Please provide a different card:\n"
+            elif "insufficient" in failure_reason.lower():
+                base_prompt = f"Insufficient funds on the card. Please provide a different card:\n"
+            elif "expired" in failure_reason.lower():
+                base_prompt = f"Your card has expired. Please provide a valid card:\n"
+            elif "invalid" in failure_reason.lower():
+                base_prompt = f"Invalid card number. Please check and re-enter:\n"
+            else:
+                base_prompt = f"Payment failed ({failure_reason}). Please try again:\n"
+        
+        return base_prompt + """
+- Card Number: 
+- Expiry (MM/YY): 
+- CVV: 
+- Name on Card: 
+- Billing Address: 
+- City: 
+- State: 
+- ZIP Code: 
+- Country: """
