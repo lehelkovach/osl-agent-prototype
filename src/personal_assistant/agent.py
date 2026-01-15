@@ -1251,6 +1251,10 @@ class PersonalAssistantAgent:
                         res = {"status": "error", "error": str(exc)}
                 elif tool_name == "form.autofill":
                     res = self._autofill_form(params)
+                elif tool_name == "billing.submit_and_verify":
+                    res = self._billing_submit_and_verify(params, provenance)
+                elif tool_name == "billing.prompt_for_data":
+                    res = self._billing_prompt_for_data(params)
                 else:
                     res = {"status": "no action taken", "tool": tool_name}
             except Exception as exc:
@@ -1486,6 +1490,141 @@ class PersonalAssistantAgent:
             "missing_fields": sorted(set(missing)),
             "pattern_uuid": pattern_uuid,
             "reused": reused,
+        }
+
+    def _billing_submit_and_verify(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Submit a billing form and verify the payment result.
+        
+        params:
+          - url: str - The checkout page URL
+          - submit_selector: str - CSS selector for submit button (optional, auto-detect)
+          - wait_ms: int - Time to wait after clicking (default 2000)
+          
+        Returns:
+            - status: "success" | "failed" | "ask_user"
+            - payment_status: "success" | "failed" | "unknown"
+            - message: Description of the result
+            - prompt: If failed, prompt for new billing data
+        """
+        if not self.web:
+            return {"status": "error", "error": "WebTools not configured"}
+        
+        url = params.get("url")
+        if not url:
+            return {"status": "error", "error": "url required"}
+        
+        submit_selector = params.get("submit_selector")
+        wait_ms = params.get("wait_ms", 2000)
+        
+        # If no submit selector provided, try common patterns
+        if not submit_selector:
+            submit_selectors = [
+                'button[type="submit"]',
+                'input[type="submit"]',
+                '#submit-btn',
+                '.submit-button',
+                'button:contains("Pay")',
+                'button:contains("Submit")',
+                'button:contains("Complete")',
+            ]
+            for sel in submit_selectors:
+                try:
+                    # Try to click the selector
+                    click_result = self.web.click_selector(url=url, selector=sel)
+                    if click_result.get("status") == "success" or click_result.get("clicked"):
+                        submit_selector = sel
+                        break
+                except Exception:
+                    continue
+        else:
+            # Click the provided selector
+            self.web.click_selector(url=url, selector=submit_selector)
+        
+        # Wait for the page to process
+        import time
+        time.sleep(wait_ms / 1000.0)
+        
+        # Get the updated page content
+        dom_result = self.web.get_dom(url)
+        page_text = dom_result.get("text", "") or dom_result.get("body", "")
+        page_html = dom_result.get("html", "")
+        
+        # Detect payment result
+        payment_result = self.form_retriever.detect_payment_result(
+            page_text=page_text,
+            page_html=page_html
+        )
+        
+        result = {
+            "status": "success",
+            "payment_status": payment_result["status"],
+            "message": payment_result["message"],
+            "confidence": payment_result["confidence"],
+        }
+        
+        # If payment failed, add prompt for user
+        if payment_result["status"] == "failed":
+            result["status"] = "ask_user"
+            result["prompt"] = self.form_retriever.build_payment_prompt(
+                failure_reason=payment_result["reason"]
+            )
+            result["failure_reason"] = payment_result["reason"]
+            
+            # Log the failed attempt
+            self.log.info(
+                "billing_payment_failed",
+                url=url,
+                reason=payment_result["reason"],
+                trace_id=provenance.trace_id,
+            )
+        elif payment_result["status"] == "success":
+            self.log.info(
+                "billing_payment_success",
+                url=url,
+                trace_id=provenance.trace_id,
+            )
+        
+        # Take a screenshot of the result
+        try:
+            screenshot = self.web.screenshot(url=url)
+            result["screenshot"] = screenshot.get("path") or screenshot.get("screenshot_path")
+        except Exception:
+            pass
+        
+        return result
+    
+    def _billing_prompt_for_data(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate a prompt asking the user for billing/payment information.
+        
+        params:
+          - failure_reason: str - Why the previous attempt failed (optional)
+          - missing_fields: list - Fields that need to be provided (optional)
+          
+        Returns:
+            - status: "ask_user"
+            - prompt: The prompt text to show the user
+        """
+        failure_reason = params.get("failure_reason")
+        missing_fields = params.get("missing_fields", [])
+        
+        if failure_reason:
+            prompt = self.form_retriever.build_payment_prompt(failure_reason=failure_reason)
+        elif missing_fields:
+            prompt = f"Please provide the following billing information:\n"
+            for field in missing_fields:
+                prompt += f"- {field.replace('_', ' ').title()}: \n"
+        else:
+            prompt = self.form_retriever.build_payment_prompt()
+        
+        return {
+            "status": "ask_user",
+            "prompt": prompt,
+            "required_fields": missing_fields or [
+                "card_number", "expiry", "cvv", "card_name",
+                "billing_address", "city", "state", "zip", "country"
+            ]
         }
 
     def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
