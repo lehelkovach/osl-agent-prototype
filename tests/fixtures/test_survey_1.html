@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Customer Feedback Survey</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 50px auto; padding: 20px; background: #f5f5f5; }
+        .survey-container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; margin-bottom: 10px; }
+        .subtitle { color: #666; margin-bottom: 30px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; color: #444; }
+        input[type="text"], input[type="email"], input[type="tel"], textarea, select {
+            width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box;
+            font-size: 14px;
+        }
+        textarea { min-height: 100px; resize: vertical; }
+        .radio-group { display: flex; gap: 20px; flex-wrap: wrap; }
+        .radio-item { display: flex; align-items: center; gap: 8px; }
+        .radio-item input { width: auto; }
+        button { background: #007bff; color: white; padding: 14px 28px; border: none; border-radius: 4px; 
+                 cursor: pointer; font-size: 16px; width: 100%; margin-top: 20px; }
+        button:hover { background: #0056b3; }
+        .success { background: #d4edda; color: #155724; padding: 15px; border-radius: 4px; display: none; margin-top: 20px; }
+        .required { color: red; }
+    </style>
+</head>
+<body>
+    <div class="survey-container">
+        <h1>Customer Feedback Survey</h1>
+        <p class="subtitle">Help us improve our services by sharing your experience</p>
+        
+        <form id="survey-form">
+            <div class="form-group">
+                <label for="full_name">Full Name <span class="required">*</span></label>
+                <input type="text" id="full_name" name="full_name" placeholder="Enter your full name" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="email">Email Address <span class="required">*</span></label>
+                <input type="email" id="email" name="email" placeholder="your.email@example.com" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="phone">Phone Number</label>
+                <input type="tel" id="phone" name="phone" placeholder="(555) 123-4567">
+            </div>
+            
+            <div class="form-group">
+                <label for="company">Company/Organization</label>
+                <input type="text" id="company" name="company" placeholder="Your company name">
+            </div>
+            
+            <div class="form-group">
+                <label for="job_title">Job Title</label>
+                <input type="text" id="job_title" name="job_title" placeholder="Your position">
+            </div>
+            
+            <div class="form-group">
+                <label for="industry">Industry</label>
+                <select id="industry" name="industry">
+                    <option value="">Select your industry</option>
+                    <option value="technology">Technology</option>
+                    <option value="healthcare">Healthcare</option>
+                    <option value="finance">Finance</option>
+                    <option value="education">Education</option>
+                    <option value="retail">Retail</option>
+                    <option value="manufacturing">Manufacturing</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label>How satisfied are you with our service? <span class="required">*</span></label>
+                <div class="radio-group">
+                    <div class="radio-item">
+                        <input type="radio" id="sat_very" name="satisfaction" value="very_satisfied" required>
+                        <label for="sat_very">Very Satisfied</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="sat_satisfied" name="satisfaction" value="satisfied">
+                        <label for="sat_satisfied">Satisfied</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="sat_neutral" name="satisfaction" value="neutral">
+                        <label for="sat_neutral">Neutral</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="sat_unsatisfied" name="satisfaction" value="unsatisfied">
+                        <label for="sat_unsatisfied">Unsatisfied</label>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label>Would you recommend us to others? <span class="required">*</span></label>
+                <div class="radio-group">
+                    <div class="radio-item">
+                        <input type="radio" id="rec_yes" name="recommend" value="yes" required>
+                        <label for="rec_yes">Yes, definitely</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="rec_maybe" name="recommend" value="maybe">
+                        <label for="rec_maybe">Maybe</label>
+                    </div>
+                    <div class="radio-item">
+                        <input type="radio" id="rec_no" name="recommend" value="no">
+                        <label for="rec_no">No</label>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <label for="feedback">Additional Comments</label>
+                <textarea id="feedback" name="feedback" placeholder="Share any additional thoughts or suggestions..."></textarea>
+            </div>
+            
+            <button type="submit" id="submit-btn">Submit Survey</button>
+        </form>
+        
+        <div class="success" id="success-msg">
+            ✓ Thank you for your feedback! Your response has been recorded.
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('survey-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            // Collect all form data
+            const formData = new FormData(this);
+            const data = Object.fromEntries(formData.entries());
+            
+            // Store in localStorage for demo purposes
+            localStorage.setItem('survey_response_' + Date.now(), JSON.stringify(data));
+            
+            // Show success message
+            document.getElementById('survey-form').style.display = 'none';
+            document.getElementById('success-msg').style.display = 'block';
+            
+            // Add class for detection
+            document.body.classList.add('survey-submitted');
+        });
+    </script>
+</body>
+</html>

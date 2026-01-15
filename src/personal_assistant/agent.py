@@ -1255,6 +1255,12 @@ class PersonalAssistantAgent:
                     res = self._billing_submit_and_verify(params, provenance)
                 elif tool_name == "billing.prompt_for_data":
                     res = self._billing_prompt_for_data(params)
+                elif tool_name == "survey.fill_and_submit":
+                    res = self._survey_fill_and_submit(params, provenance)
+                elif tool_name == "survey.store_response":
+                    res = self._survey_store_response(params, provenance)
+                elif tool_name == "survey.prompt_for_missing":
+                    res = self._survey_prompt_for_missing(params)
                 else:
                     res = {"status": "no action taken", "tool": tool_name}
             except Exception as exc:
@@ -1626,6 +1632,229 @@ class PersonalAssistantAgent:
                 "billing_address", "city", "state", "zip", "country"
             ]
         }
+
+    def _survey_fill_and_submit(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Fill a survey form using stored answers and prompt for missing fields.
+        
+        params:
+          - url: str - The survey page URL
+          - form_fields: list - Optional list of {field_name, label, required, selector}
+          - submit_selector: str - CSS selector for submit button (optional)
+          
+        Returns:
+            - status: "success" | "ask_user" | "error"
+            - filled: List of filled fields
+            - missing: List of fields needing user input
+            - prompt: If missing fields, prompt text for user
+        """
+        if not self.web:
+            return {"status": "error", "error": "WebTools not configured"}
+        
+        url = params.get("url")
+        if not url:
+            return {"status": "error", "error": "url required"}
+        
+        # Get form fields if not provided
+        form_fields = params.get("form_fields", [])
+        
+        # Get page DOM to detect form fields
+        dom_result = self.web.get_dom(url)
+        html = dom_result.get("html", "") or dom_result.get("body", "")
+        
+        # If no form fields provided, try to detect them from DOM
+        if not form_fields and html:
+            form_fields = self._detect_form_fields(html)
+        
+        # Build autofill data from stored surveys
+        autofill_result = self.form_retriever.build_survey_autofill(
+            form_fields=form_fields,
+            query="survey personal info contact",
+            top_k=20
+        )
+        
+        autofill = autofill_result.get("autofill", {})
+        missing = autofill_result.get("missing", [])
+        missing_labels = autofill_result.get("missing_labels", {})
+        
+        # If we have missing required fields, ask user
+        if missing:
+            prompt = self.form_retriever.build_survey_prompt(missing, missing_labels)
+            return {
+                "status": "ask_user",
+                "filled": list(autofill.keys()),
+                "autofill": autofill,
+                "missing": missing,
+                "missing_labels": missing_labels,
+                "prompt": prompt,
+                "message": f"Need {len(missing)} more fields to complete the survey"
+            }
+        
+        # Fill the form fields
+        filled = []
+        for field_name, value in autofill.items():
+            # Find selector for this field
+            selector = None
+            for f in form_fields:
+                if f.get("field_name") == field_name:
+                    selector = f.get("selector")
+                    break
+            
+            if not selector:
+                # Try common selector patterns
+                selector = f'#{field_name}, [name="{field_name}"], [id="{field_name}"]'
+            
+            try:
+                res = self.web.fill(url=url, selector=selector, text=str(value))
+                filled.append({
+                    "field": field_name,
+                    "value": value,
+                    "selector": selector,
+                    "result": res
+                })
+            except Exception as e:
+                self.log.warning("survey_fill_error", field=field_name, error=str(e))
+        
+        # Click submit if selector provided
+        submit_selector = params.get("submit_selector")
+        if submit_selector:
+            try:
+                self.web.click_selector(url=url, selector=submit_selector)
+            except Exception:
+                pass
+        
+        # Store the response for future reuse
+        questions_and_answers = [
+            {"field_name": f["field"], "answer": f["value"]}
+            for f in filled
+        ]
+        self.form_retriever.store_survey_response(
+            form_url=url,
+            questions_and_answers=questions_and_answers,
+            form_title=params.get("form_title")
+        )
+        
+        return {
+            "status": "success",
+            "filled": filled,
+            "missing": [],
+            "stored": True,
+            "message": f"Filled {len(filled)} fields successfully"
+        }
+    
+    def _survey_store_response(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Store a user's survey answers for future reuse.
+        
+        params:
+          - url: str - Form URL
+          - answers: dict - {field_name: answer} mapping
+          - form_title: str - Optional title
+          
+        Returns:
+            - status: "success" | "error"
+            - uuid: UUID of stored response
+        """
+        url = params.get("url", "")
+        answers = params.get("answers", {})
+        form_title = params.get("form_title")
+        
+        if not answers:
+            return {"status": "error", "error": "No answers provided"}
+        
+        # Convert to questions_and_answers format
+        qa_list = [
+            {"field_name": field, "answer": value}
+            for field, value in answers.items()
+            if value is not None
+        ]
+        
+        uuid = self.form_retriever.store_survey_response(
+            form_url=url,
+            questions_and_answers=qa_list,
+            form_title=form_title
+        )
+        
+        if uuid:
+            self.log.info(
+                "survey_response_stored",
+                uuid=uuid,
+                fields=len(qa_list),
+                trace_id=provenance.trace_id
+            )
+            return {"status": "success", "uuid": uuid, "stored_fields": len(qa_list)}
+        else:
+            return {"status": "error", "error": "Failed to store survey response"}
+    
+    def _survey_prompt_for_missing(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate a prompt for missing survey fields.
+        
+        params:
+          - missing_fields: list - Field names that need values
+          - field_labels: dict - Optional {field: label} mapping
+          
+        Returns:
+            - status: "ask_user"
+            - prompt: Prompt text for user
+        """
+        missing = params.get("missing_fields", [])
+        labels = params.get("field_labels", {})
+        
+        if not missing:
+            return {"status": "success", "message": "No missing fields"}
+        
+        prompt = self.form_retriever.build_survey_prompt(missing, labels)
+        
+        return {
+            "status": "ask_user",
+            "prompt": prompt,
+            "missing_fields": missing
+        }
+    
+    def _detect_form_fields(self, html: str) -> List[Dict[str, Any]]:
+        """
+        Detect form fields from HTML content.
+        
+        Args:
+            html: Page HTML
+            
+        Returns:
+            List of {field_name, label, required, selector} dicts
+        """
+        import re
+        
+        fields = []
+        
+        # Find input, select, and textarea elements
+        input_pattern = r'<(input|select|textarea)[^>]*(?:name=["\']([^"\']+)["\']|id=["\']([^"\']+)["\'])[^>]*>'
+        
+        for match in re.finditer(input_pattern, html, re.IGNORECASE):
+            tag_type = match.group(1).lower()
+            name = match.group(2) or match.group(3)
+            
+            if not name or name in ('submit', 'button', 'csrf', 'token'):
+                continue
+            
+            # Check if required
+            required = 'required' in match.group(0).lower()
+            
+            # Determine input type
+            type_match = re.search(r'type=["\']([^"\']+)["\']', match.group(0), re.IGNORECASE)
+            input_type = type_match.group(1) if type_match else 'text'
+            
+            if input_type in ('hidden', 'submit', 'button'):
+                continue
+            
+            fields.append({
+                "field_name": name,
+                "label": name.replace("_", " ").replace("-", " ").title(),
+                "required": required,
+                "selector": f'#{name}, [name="{name}"]',
+                "type": input_type if tag_type == 'input' else tag_type
+            })
+        
+        return fields
 
     def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
         """

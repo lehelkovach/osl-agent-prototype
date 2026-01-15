@@ -319,6 +319,249 @@ class FormDataRetriever:
         
         return answer_map
 
+    def store_survey_response(
+        self,
+        form_url: str,
+        questions_and_answers: List[Dict[str, Any]],
+        form_title: Optional[str] = None,
+    ) -> Optional[str]:
+        """
+        Store a completed survey response for future reuse.
+        
+        Args:
+            form_url: URL of the survey form
+            questions_and_answers: List of {question, field_name, answer} dicts
+            form_title: Optional title of the survey
+            
+        Returns:
+            UUID of the created SurveyResponse node
+        """
+        from uuid import uuid4
+        from datetime import datetime, timezone
+        from src.personal_assistant.models import Node, Provenance
+        
+        node_uuid = str(uuid4())
+        props = {
+            "form_url": form_url,
+            "form_title": form_title or f"Survey at {extract_domain(form_url)}",
+            "questions": questions_and_answers,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        # Also store individual field values for easy lookup
+        for qa in questions_and_answers:
+            field = qa.get("field_name", "")
+            answer = qa.get("answer")
+            if field and answer is not None:
+                props[field] = answer
+        
+        try:
+            # Create embedding from questions for semantic search
+            text_for_embed = form_title or ""
+            text_for_embed += " " + " ".join(
+                qa.get("question", "") for qa in questions_and_answers
+            )
+            embedding = []
+            if self.embed_fn:
+                try:
+                    embedding = self.embed_fn(text_for_embed[:500])
+                except Exception:
+                    pass
+            
+            node = Node(
+                uuid=node_uuid,
+                kind="SurveyResponse",
+                props=props,
+                labels=["SurveyResponse", extract_domain(form_url)],
+                llm_embedding=embedding or []
+            )
+            provenance = Provenance(
+                source="survey",
+                ts=datetime.now(timezone.utc).isoformat(),
+                confidence=1.0,
+                trace_id=f"survey-{node_uuid[:8]}"
+            )
+            self.memory.upsert(node, provenance)
+            return node_uuid
+        except Exception:
+            return None
+
+    def get_missing_survey_fields(
+        self,
+        required_fields: List[str],
+        available_answers: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Determine which required fields don't have answers.
+        
+        Args:
+            required_fields: List of required field names
+            available_answers: Dict of field -> answer from matched surveys
+            
+        Returns:
+            List of field names that need user input
+        """
+        missing = []
+        for field in required_fields:
+            if field not in available_answers or available_answers[field] is None:
+                missing.append(field)
+        return missing
+
+    def build_survey_prompt(
+        self,
+        missing_fields: List[str],
+        field_labels: Optional[Dict[str, str]] = None
+    ) -> str:
+        """
+        Generate a prompt asking the user for missing survey information.
+        
+        Args:
+            missing_fields: List of field names that need values
+            field_labels: Optional mapping of field_name -> human-readable label
+            
+        Returns:
+            Prompt string for the user
+        """
+        field_labels = field_labels or {}
+        
+        prompt = "Please provide the following information to complete the form:\n\n"
+        
+        for field in missing_fields:
+            label = field_labels.get(field, field.replace("_", " ").title())
+            prompt += f"- {label}: \n"
+        
+        return prompt
+
+    # Common field synonyms for matching similar questions across surveys
+    # These are exact matches or field names that contain these terms
+    FIELD_SYNONYMS = {
+        "name": ["name", "full_name", "fullname", "your_name"],
+        "email": ["email", "email_address", "e_mail"],
+        "phone": ["phone", "phone_number", "telephone", "mobile", "cell"],
+        "company": ["company", "organization", "employer", "workplace"],
+        "job_title": ["job_title", "role", "position", "job_position"],
+        "industry": ["industry", "sector", "business_type"],
+        "feedback": ["feedback", "comments", "additional_comments", "notes"],
+    }
+
+    def normalize_field_name(self, field: str) -> str:
+        """
+        Normalize a field name to a canonical form for matching.
+        
+        Args:
+            field: Raw field name from form
+            
+        Returns:
+            Normalized canonical field name
+        """
+        field_lower = field.lower().strip().replace("-", "_")
+        
+        # First check for exact matches
+        for canonical, synonyms in self.FIELD_SYNONYMS.items():
+            if field_lower in synonyms:
+                return canonical
+        
+        # Then check if field contains a synonym (but must be a significant match)
+        for canonical, synonyms in self.FIELD_SYNONYMS.items():
+            for syn in synonyms:
+                # Only match if synonym is at least 4 chars and is a word boundary match
+                if len(syn) >= 4 and (
+                    field_lower == syn or
+                    field_lower.startswith(syn + "_") or
+                    field_lower.endswith("_" + syn) or
+                    f"_{syn}_" in field_lower
+                ):
+                    return canonical
+        
+        return field_lower
+
+    def build_survey_autofill(
+        self,
+        form_fields: List[Dict[str, Any]],
+        query: str = "survey form personal info",
+        top_k: int = 10
+    ) -> Dict[str, Any]:
+        """
+        Build autofill data for a survey form from stored responses.
+        
+        Args:
+            form_fields: List of {field_name, label, required} dicts describing the form
+            query: Search query for finding relevant stored data
+            top_k: Number of stored responses to search
+            
+        Returns:
+            Dict with:
+                - autofill: {field_name: value} for fields we can fill
+                - missing: [field_names] that need user input
+                - confidence: Overall confidence score
+        """
+        # Normalize field names for matching
+        normalized_fields = {}
+        required_fields = []
+        field_labels = {}
+        
+        for f in form_fields:
+            field_name = f.get("field_name", "")
+            label = f.get("label", field_name)
+            required = f.get("required", False)
+            
+            if field_name:
+                normalized = self.normalize_field_name(field_name)
+                normalized_fields[field_name] = normalized
+                field_labels[field_name] = label
+                if required:
+                    required_fields.append(field_name)
+        
+        # Search for stored data (SurveyResponse, Identity, FormData)
+        results = self.memory.search(query, top_k=top_k)
+        
+        # Collect values from all matching nodes
+        values_by_field: Dict[str, Any] = {}
+        values_by_normalized: Dict[str, Any] = {}
+        
+        for node in results:
+            props = node.get("props", {}) if isinstance(node, dict) else getattr(node, "props", {})
+            kind = node.get("kind") if isinstance(node, dict) else getattr(node, "kind", None)
+            
+            if kind not in self.SUPPORTED_KINDS:
+                continue
+            
+            for key, value in props.items():
+                if value is not None and key not in ("questions", "form_url", "completed_at", "stored_at"):
+                    normalized_key = self.normalize_field_name(key)
+                    if normalized_key not in values_by_normalized:
+                        values_by_normalized[normalized_key] = value
+                    if key not in values_by_field:
+                        values_by_field[key] = value
+        
+        # Build autofill map
+        autofill = {}
+        for field_name, normalized in normalized_fields.items():
+            # Try exact match first
+            if field_name in values_by_field:
+                autofill[field_name] = values_by_field[field_name]
+            # Then try normalized match
+            elif normalized in values_by_normalized:
+                autofill[field_name] = values_by_normalized[normalized]
+        
+        # Find missing required fields
+        missing = self.get_missing_survey_fields(required_fields, autofill)
+        
+        # Calculate confidence
+        if len(form_fields) > 0:
+            filled_ratio = len(autofill) / len(form_fields)
+        else:
+            filled_ratio = 0.0
+        
+        return {
+            "autofill": autofill,
+            "missing": missing,
+            "missing_labels": {f: field_labels.get(f, f) for f in missing},
+            "confidence": filled_ratio,
+            "total_fields": len(form_fields),
+            "filled_fields": len(autofill),
+        }
+
     # Payment/Billing Result Detection Methods
     
     PAYMENT_SUCCESS_INDICATORS = [
