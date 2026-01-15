@@ -66,7 +66,7 @@ Tool catalog (choose minimal set):
 - cpms.create_procedure(name, description, steps[]) / cpms.list_procedures() / cpms.get_procedure(procedure_id)
 - cpms.create_task(procedure_id, title, payload) / cpms.list_tasks(procedure_id?)
 - cpms.detect_form(html, screenshot_path?, url?, dom_snapshot?)  # detect form patterns (email/password/submit) from HTML/DOM
-- procedure.create(title, description, steps[], dependencies?, guards?)  # persist Procedure/Step DAG with embeddings
+- procedure.create(title, description, steps[], dependencies?, guards?)  # persist Procedure as a DAG in KnowShowGo (Concept + has_step edges); steps must include tool+params
 - procedure.search(query, top_k?)  # retrieve similar procedures by embedding/text
 - form.autofill(url, selectors{field:selector}, required_fields?, query?)  # autofill using stored FormData/Identity/Credential/PaymentMethod
 - ksg.search_concepts(query, top_k?, prototype_filter?)  # search KnowShowGo concepts by embedding similarity

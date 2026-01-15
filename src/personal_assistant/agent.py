@@ -110,9 +110,33 @@ class PersonalAssistantAgent:
             has_embedding=query_embedding is not None,
             trace_id=provenance.trace_id,
         )
-        # Procedure reuse (embedding-aware)
+        # Procedure reuse (embedding-aware): prefer KnowShowGo Procedure concepts,
+        # and also include legacy ProcedureBuilder results for backward compatibility.
+        proc_matches: List[Dict[str, Any]] = []
+        try:
+            proc_proto_uuid = self.ksg.find_prototype_uuid("Procedure") if self.ksg else None
+            if proc_proto_uuid:
+                ksg_raw = self.memory.search(
+                    user_request,
+                    top_k=3,
+                    filters={"kind": "Concept"},
+                    query_embedding=query_embedding,
+                )
+                for r in ksg_raw:
+                    rr = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+                    props = rr.get("props", {}) if isinstance(rr, dict) else {}
+                    if props.get("prototype_uuid") == proc_proto_uuid:
+                        proc_matches.append(rr)
+        except Exception:
+            pass
+
         if self.procedure_builder:
-            proc_matches = self.procedure_builder.search_procedures(user_request, top_k=3)
+            try:
+                proc_matches.extend(self.procedure_builder.search_procedures(user_request, top_k=3))
+            except Exception:
+                pass
+
+        if proc_matches:
             self._last_procedure_matches = proc_matches
             memory_results.extend(proc_matches)
             self._emit(
@@ -123,8 +147,6 @@ class PersonalAssistantAgent:
                     "trace_id": provenance.trace_id,
                 },
             )
-        else:
-            proc_matches = []
 
         # Concept search in KnowShowGo (embedding-based)
         concept_matches = []
@@ -832,31 +854,123 @@ class PersonalAssistantAgent:
                     else:
                         res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
                 elif tool_name == "procedure.create":
+                    # Canonical persistence: always store a Procedure DAG into KnowShowGo (Concept + has_step edges).
+                    # Keep ProcedureBuilder/CPMS as optional secondary stores for backward compatibility.
+                    created_concept_uuid: Optional[str] = None
+                    try:
+                        proc_title = params.get("title") or params.get("name") or "Procedure"
+                        proc_desc = params.get("description") or ""
+                        proc_proto_uuid = self.ksg.ensure_prototype(
+                            name="Procedure",
+                            description="Prototype for procedures/recipes/step-by-step instructions",
+                            context="procedures and workflows",
+                            labels=["prototype", "procedure"],
+                            provenance=provenance,
+                        )
+                        step_proto_uuid = self.ksg.ensure_prototype(
+                            name="Step",
+                            description="Prototype for executable procedure steps (tool + params)",
+                            context="procedure steps and execution nodes",
+                            labels=["prototype", "step"],
+                            provenance=provenance,
+                        )
+
+                        raw_steps = params.get("steps") or []
+                        step_concepts: List[Dict[str, Any]] = []
+                        for idx, st in enumerate(raw_steps):
+                            if not isinstance(st, dict):
+                                continue
+                            tool = st.get("tool")
+                            step_concepts.append(
+                                {
+                                    "prototype_uuid": step_proto_uuid,
+                                    "name": st.get("title") or tool or f"step-{idx}",
+                                    "tool": tool,
+                                    "params": st.get("params", {}) if isinstance(st.get("params", {}), dict) else {},
+                                    "order": st.get("order", idx),
+                                    "guard": st.get("guard"),
+                                    "on_fail": st.get("on_fail"),
+                                }
+                            )
+
+                        dag_json = {
+                            "name": proc_title,
+                            "description": proc_desc,
+                            # Use "steps" so the DAG executor can still load from props,
+                            # and also so create_concept_recursive will create child concepts.
+                            "steps": step_concepts,
+                            "dependencies": params.get("dependencies") or [],
+                            "guards": params.get("guards") or {},
+                        }
+
+                        proc_emb = self._embed_text(f"{proc_title} {proc_desc}") or [0.0, 0.0]
+
+                        def _embed_list(text: str) -> List[float]:
+                            return self._embed_text(text) or [0.0, 0.0]
+
+                        created_concept_uuid = self.ksg.create_concept_recursive(
+                            prototype_uuid=proc_proto_uuid,
+                            json_obj=dag_json,
+                            embedding=proc_emb,
+                            provenance=provenance,
+                            embed_fn=_embed_list,
+                        )
+                    except Exception:
+                        created_concept_uuid = None
+
+                    # Optional: CPMS store
+                    cpms_proc = None
                     if self.use_cpms_for_procs and self.cpms:
-                        res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
-                    elif self.procedure_builder:
-                        norm_params = params.copy()
-                        # Normalize to ProcedureBuilder signature (title instead of name)
-                        if "name" in norm_params and "title" not in norm_params:
-                            norm_params["title"] = norm_params.pop("name")
-                        if "steps" in norm_params:
-                            norm_steps = []
-                            for idx, st in enumerate(norm_params.get("steps") or []):
-                                norm_steps.append(
-                                    {
-                                        "title": st.get("title") or st.get("tool") or f"step-{idx}",
-                                        "tool": st.get("tool"),
-                                        "payload": {"tool": st.get("tool"), "params": st.get("params", {})},
-                                        "order": st.get("order", idx),
-                                    }
-                                )
-                            norm_params["steps"] = norm_steps
+                        try:
+                            cpms_proc = self.cpms.create_procedure(**params)
+                        except Exception:
+                            cpms_proc = None
+
+                    # Optional: ProcedureBuilder store (legacy)
+                    builder_proc = None
+                    if self.procedure_builder:
+                        try:
+                            norm_params = params.copy()
+                            # Normalize to ProcedureBuilder signature (title instead of name)
+                            if "name" in norm_params and "title" not in norm_params:
+                                norm_params["title"] = norm_params.pop("name")
+                            if "steps" in norm_params:
+                                norm_steps = []
+                                for idx, st in enumerate(norm_params.get("steps") or []):
+                                    if not isinstance(st, dict):
+                                        continue
+                                    norm_steps.append(
+                                        {
+                                            "title": st.get("title") or st.get("tool") or f"step-{idx}",
+                                            "tool": st.get("tool"),
+                                            "payload": {"tool": st.get("tool"), "params": st.get("params", {})},
+                                            "order": st.get("order", idx),
+                                        }
+                                    )
+                                norm_params["steps"] = norm_steps
+                            # Link the legacy Procedure node back to the KSG concept if available.
+                            extra_props = norm_params.get("extra_props") or {}
+                            if created_concept_uuid:
+                                extra_props = {**extra_props, "concept_uuid": created_concept_uuid}
+                            norm_params["extra_props"] = extra_props
+                            builder_proc = self.procedure_builder.create_procedure(**norm_params)
+                        except Exception:
+                            builder_proc = None
+
+                    if not (created_concept_uuid or builder_proc or cpms_proc):
+                        res = {"status": "error", "error": "Failed to create procedure"}
+                    else:
                         res = {
                             "status": "success",
-                            "procedure": self.procedure_builder.create_procedure(**norm_params),
+                            "procedure": {
+                                **({"procedure_uuid": builder_proc.get("procedure_uuid")} if isinstance(builder_proc, dict) else {}),
+                                "concept_uuid": created_concept_uuid,
+                                # Keep CPMS response available, but also surface common fields
+                                # at the top-level for backward compatibility with older tests.
+                                **({"id": cpms_proc.get("id")} if isinstance(cpms_proc, dict) and cpms_proc.get("id") else {}),
+                                "cpms": cpms_proc,
+                            },
                         }
-                    else:
-                        res = {"status": "error", "error": "ProcedureBuilder not configured"}
                 elif tool_name == "procedure.search":
                     if self.use_cpms_for_procs and self.cpms:
                         try:
@@ -865,13 +979,31 @@ class PersonalAssistantAgent:
                             res = {"status": "error", "error": str(exc)}
                         else:
                             res = {"status": "success", "procedures": procs}
-                    elif self.procedure_builder:
-                        res = {
-                            "status": "success",
-                            "procedures": self.procedure_builder.search_procedures(**params),
-                        }
                     else:
-                        res = {"status": "error", "error": "ProcedureBuilder not configured"}
+                        # Prefer KnowShowGo concepts (Procedure DAGs) and optionally include legacy ProcedureBuilder results.
+                        query = params.get("query") or params.get("text") or ""
+                        top_k = int(params.get("top_k") or 5)
+                        ksg_matches: List[Dict[str, Any]] = []
+                        try:
+                            proc_proto_uuid = self.ksg.find_prototype_uuid("Procedure")
+                            if proc_proto_uuid:
+                                qemb = self._embed_text(query) if query else None
+                                raw = self.memory.search(query, top_k=top_k, filters={"kind": "Concept"}, query_embedding=qemb)
+                                for r in raw:
+                                    rr = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+                                    props = rr.get("props", {}) if isinstance(rr, dict) else {}
+                                    if props.get("prototype_uuid") == proc_proto_uuid:
+                                        ksg_matches.append(rr)
+                        except Exception:
+                            ksg_matches = []
+
+                        legacy_matches: List[Dict[str, Any]] = []
+                        if self.procedure_builder:
+                            try:
+                                legacy_matches = self.procedure_builder.search_procedures(query=query, top_k=top_k)
+                            except Exception:
+                                legacy_matches = []
+                        res = {"status": "success", "procedures": ksg_matches + legacy_matches}
                 elif tool_name == "ksg.create_prototype":
                     try:
                         proto_uuid = self.ksg.create_prototype(**params)
@@ -1367,6 +1499,79 @@ class PersonalAssistantAgent:
         steps_with_order.sort(key=lambda t: t[0])
         return [s for _, s in steps_with_order]
 
+    def _load_ksg_procedure_steps(self, concept_uuid: str) -> List[Dict[str, Any]]:
+        """
+        Hydrate stored procedure steps from KnowShowGo (Concept + has_step edges).
+
+        Supports two representations:
+        - Preferred: child Concept nodes linked by has_step edges (created via ksg.create_concept_recursive)
+        - Fallback: props["steps"] list stored directly on the Procedure concept
+        """
+        if not concept_uuid:
+            return []
+
+        # 1) Preferred: load child concepts via has_step edges
+        try:
+            if hasattr(self.memory, "edges") and hasattr(self.memory, "nodes"):
+                edges = [
+                    e
+                    for e in self.memory.edges.values()
+                    if getattr(e, "from_node", None) == concept_uuid and getattr(e, "rel", None) == "has_step"
+                ]
+                if edges:
+                    edges.sort(key=lambda e: (getattr(e, "props", {}) or {}).get("order", 0))
+                    steps: List[Dict[str, Any]] = []
+                    for edge in edges:
+                        child = self.memory.nodes.get(edge.to_node)
+                        if not child:
+                            continue
+                        props = child.get("props", {}) if isinstance(child, dict) else getattr(child, "props", {})
+                        tool = props.get("tool")
+                        params = props.get("params") or {}
+                        if not tool and isinstance(props.get("payload"), dict):
+                            tool = props["payload"].get("tool")
+                            params = props["payload"].get("params") or params
+                        if tool:
+                            steps.append(
+                                {
+                                    "tool": tool,
+                                    "params": params if isinstance(params, dict) else {},
+                                    "comment": f"Reused KSG step {props.get('name') or props.get('title') or tool}",
+                                }
+                            )
+                    if steps:
+                        return steps
+        except Exception:
+            pass
+
+        # 2) Fallback: load from parent concept props["steps"]
+        try:
+            parent = self.memory.nodes.get(concept_uuid) if hasattr(self.memory, "nodes") else None
+            if not parent:
+                return []
+            parent_props = parent.get("props", {}) if isinstance(parent, dict) else getattr(parent, "props", {})
+            raw_steps = parent_props.get("steps") or []
+            steps_with_order = []
+            for idx, st in enumerate(raw_steps):
+                if not isinstance(st, dict):
+                    continue
+                tool = st.get("tool")
+                params = st.get("params") or {}
+                steps_with_order.append(
+                    (
+                        st.get("order", idx),
+                        {
+                            "tool": tool,
+                            "params": params if isinstance(params, dict) else {},
+                            "comment": f"Reused KSG step {st.get('title') or tool or f'step-{idx}'}",
+                        },
+                    )
+                )
+            steps_with_order.sort(key=lambda t: t[0])
+            return [s for _, s in steps_with_order if s.get("tool")]
+        except Exception:
+            return []
+
     def _update_procedure_selectors(self, proc_uuid: str, execution_results: Dict[str, Any]) -> None:
         """
         If a reused procedure succeeded using fallback selectors, persist those selectors back into the stored Step.
@@ -1828,7 +2033,15 @@ class PersonalAssistantAgent:
         """
         if proc_matches:
             proc = proc_matches[0]
-            steps = self._load_procedure_steps(proc)
+            proc_kind = proc.get("kind") if isinstance(proc, dict) else None
+            proc_props = proc.get("props", {}) if isinstance(proc, dict) else {}
+            # Prefer KSG Procedure concepts when available.
+            if proc_kind == "Concept" and proc.get("uuid"):
+                steps = self._load_ksg_procedure_steps(proc["uuid"])
+                display_name = proc_props.get("name") or proc_props.get("title") or "Procedure"
+            else:
+                steps = self._load_procedure_steps(proc)
+                display_name = proc_props.get("title") or proc_props.get("name") or "Procedure"
             if steps:
                 if len(steps) <= 1:
                     return {
@@ -1837,19 +2050,19 @@ class PersonalAssistantAgent:
                             {
                                 "tool": "procedure.search",
                                 "params": {"query": user_request, "top_k": 3},
-                                "comment": f"Reuse procedure match {proc.get('props', {}).get('title', '')}",
+                                "comment": f"Reuse procedure match {display_name}",
                             }
                         ],
                         "reuse": True,
                         "procedure_uuid": proc.get("uuid"),
-                        "raw_llm": f"Reusing stored procedure {proc.get('props', {}).get('title', '')}".strip(),
+                        "raw_llm": f"Reusing stored procedure {display_name}".strip(),
                     }
                 return {
                     "intent": intent,
                     "steps": steps,
                     "reuse": True,
                     "procedure_uuid": proc.get("uuid"),
-                    "raw_llm": f"Reusing stored procedure {proc.get('props', {}).get('title', '')}".strip(),
+                    "raw_llm": f"Reusing stored procedure {display_name}".strip(),
                 }
             # Fallback to search if we cannot hydrate steps
             return {
@@ -1858,7 +2071,7 @@ class PersonalAssistantAgent:
                     {
                         "tool": "procedure.search",
                         "params": {"query": user_request, "top_k": 3},
-                        "comment": f"Reuse procedure match {proc.get('props', {}).get('title', '')}",
+                        "comment": f"Reuse procedure match {display_name}",
                     }
                 ],
                 "reuse": True,
