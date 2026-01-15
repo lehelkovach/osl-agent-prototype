@@ -14,6 +14,7 @@ from src.personal_assistant.task_queue import TaskQueueManager
 from src.personal_assistant.events import EventBus, NullEventBus
 from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
+from src.personal_assistant.procedure_manager import ProcedureManager
 from src.personal_assistant.knowshowgo import KnowShowGoAPI
 from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
@@ -969,7 +970,35 @@ class PersonalAssistantAgent:
                     except Exception:
                         pass
                     # #endregion
-                    if self.use_cpms_for_procs and self.cpms:
+                    
+                    # Check if params match the new JSON schema format (has "id" in steps)
+                    is_new_schema = (
+                        "steps" in params and
+                        isinstance(params["steps"], list) and
+                        len(params["steps"]) > 0 and
+                        "id" in params["steps"][0]
+                    )
+                    
+                    if is_new_schema:
+                        # Use ProcedureManager for new JSON schema format
+                        try:
+                            proc_manager = ProcedureManager(
+                                memory=self.memory,
+                                embed_fn=self._embed_text,
+                                ksg=self.ksg
+                            )
+                            procedure_result = proc_manager.create_from_json(params, provenance=provenance)
+                            res = {
+                                "status": "success",
+                                "procedure": procedure_result,
+                                "format": "json_dag"
+                            }
+                            logger.info(f"Created procedure DAG: {procedure_result.get('procedure_uuid')}")
+                        except ValueError as ve:
+                            res = {"status": "error", "error": f"Invalid procedure JSON: {ve}"}
+                        except Exception as exc:
+                            res = {"status": "error", "error": str(exc)}
+                    elif self.use_cpms_for_procs and self.cpms:
                         res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
                     elif self.procedure_builder:
                         norm_params = params.copy()
