@@ -83,6 +83,30 @@ Only after the above is stable:
   - or gate those tests behind an explicit flag
 - Add a quick “smoke” test job (unit-only) and keep live tests opt-in.
 
+## Branching & merge policy (recommended)
+
+### Default strategy
+- **Small, focused branches**: one feature/fix per branch where feasible.
+- **Prefer fast-forward or rebase-based merges** to keep history readable.
+
+### When to cherry-pick vs merge
+- **Cherry-pick** when:
+  - the change is **docs-only** (or otherwise low-risk and self-contained),
+  - you want to avoid pulling in unrelated commits from a long-lived branch.
+- **Merge (or rebase then merge)** when:
+  - the branch is the canonical implementation branch for a feature,
+  - it has passed the full expected test matrix.
+
+### Minimum “ready to merge” checklist
+- **Tests**: `poetry run pytest` passes in the expected environment (and CI, if present).
+- **Playwright**: either CI installs browsers or Playwright tests are explicitly gated (no accidental hard-fails).
+- **Repo hygiene**: no stray artifacts (e.g., accidental gitlinks/submodules without `.gitmodules`, local debug logs, bundles) unless explicitly intended and documented.
+- **Docs**: update `docs/development-plan.md` (next steps) and `docs/session-notes.md` (what changed) when behavior or interfaces change.
+
+### Archiving policy
+- After a branch is merged to `main`, **delete the non-archived remote branch** and keep an `archived/...` copy if you want a preserved pointer.
+- Keep “active” branches limited to the few currently under development.
+
 ## Risks / guardrails
 - Avoid mixing activation directly into long-term similarity scoring; keep a separate `_activation_boost` and combine with a small multiplier.
 - Avoid large refactors in `agent.py` until the CPMS/dataset/autofill milestones are working end-to-end.

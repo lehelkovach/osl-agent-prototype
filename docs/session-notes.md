@@ -109,11 +109,14 @@
 - `.env.local` is in use; `USE_FAKE_OPENAI`, `ASK_USER_FALLBACK`, `USE_CPMS_FOR_PROCS` etc. are toggled via env. Arango TLS verify is controlled by `ARANGO_VERIFY`.
 
 ## Testing
-- **Latest (2026-01-14)**: `USE_PLAYWRIGHT=1 pytest -q` → 332 passed, 29 skipped, 9 failed
+- **Latest (2026-01-14)**: `USE_PLAYWRIGHT=1 pytest -q` → 354 passed, 29 skipped, 9 failed
   - ✅ Playwright browser installed (`playwright install --with-deps chromium`)
   - ✅ Playwright tests now passing (web actions, LinkedIn login, locate missing)
   - 9 failures: Pre-existing queue/scheduler issues from main branch
-- **Progress**: Salvage Steps A-D (+81), Milestone B (+17), Milestone C (+5) = +103 new tests
+- **Progress**: +125 new tests since starting (from ~229 to 354)
+  - Salvage Steps A-D: +81 tests
+  - Milestone B+C: +22 tests  
+  - Integration Tests: +22 tests
 - Previous: `pytest tests/test_task_queue.py tests/test_agent_queue_enqueue.py -q` (queue enqueue/delay coverage)
 - Previous: `pytest tests/test_memory_contract.py -q` (passing across mock + networkx)
 - Previous: `pytest tests/test_knowshowgo*.py -q` (KnowShowGo tests passing after merge fix)
