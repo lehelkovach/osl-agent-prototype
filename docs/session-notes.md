@@ -1,5 +1,57 @@
 # Session Notes
 
+## 2026-01-16: LLM JSON to KnowShowGo DAG Procedures
+
+### Changes Made
+- Created `ProcedureManager` for LLM JSON to DAG conversion
+- Defined JSON schema for LLM-generated procedures
+- Integrated with agent for automatic format detection
+- Updated prompts with procedure JSON schema
+
+### JSON Schema for Procedures
+```json
+{
+  "name": "LinkedIn Login",
+  "description": "Log into LinkedIn",
+  "steps": [
+    {
+      "id": "step_1",
+      "name": "Navigate to login",
+      "tool": "web.get_dom",
+      "params": {"url": "https://linkedin.com/login"},
+      "depends_on": [],
+      "on_fail": "stop"
+    },
+    {
+      "id": "step_2",
+      "name": "Fill email",
+      "tool": "web.fill",
+      "params": {"selector": "#username", "text": "${credentials.email}"},
+      "depends_on": ["step_1"]
+    }
+  ]
+}
+```
+
+### Flow
+```
+LLM generates JSON → ProcedureManager.validate() → ProcedureManager.create_from_json()
+                                                          ↓
+                                            KnowShowGo DAG (Procedure + Steps + Edges)
+                                                          ↓
+                                            Searchable & Executable via DAGExecutor
+```
+
+### Files Created
+- `src/personal_assistant/procedure_manager.py` - JSON validation and DAG creation
+- `tests/test_procedure_manager.py` - 29 tests for validation and conversion
+
+### Test Results
+- **535 tests passing** (29 new procedure manager tests)
+- 12 skipped (integration tests requiring external services)
+
+---
+
 ## 2026-01-15: SafeShellExecutor with Sandbox and Rollback
 
 ### Changes Made
