@@ -435,13 +435,20 @@ class FormDataRetriever:
     # Common field synonyms for matching similar questions across surveys
     # These are exact matches or field names that contain these terms
     FIELD_SYNONYMS = {
-        "name": ["name", "full_name", "fullname", "your_name"],
-        "email": ["email", "email_address", "e_mail"],
-        "phone": ["phone", "phone_number", "telephone", "mobile", "cell"],
-        "company": ["company", "organization", "employer", "workplace"],
-        "job_title": ["job_title", "role", "position", "job_position"],
+        "name": ["name", "full_name", "fullname", "your_name", "customer_name"],
+        "first_name": ["first_name", "firstname", "given_name", "forename"],
+        "last_name": ["last_name", "lastname", "surname", "family_name"],
+        "email": ["email", "email_address", "e_mail", "emailaddress"],
+        "phone": ["phone", "phone_number", "telephone", "mobile", "cell", "tel"],
+        "company": ["company", "company_name", "companyname", "employer", "workplace"],
+        "organization": ["organization", "organisation", "org"],
+        "job_title": ["job_title", "jobtitle", "role", "position", "job_position", "title"],
         "industry": ["industry", "sector", "business_type"],
         "feedback": ["feedback", "comments", "additional_comments", "notes"],
+        "country": ["country", "nation", "location_country"],
+        "city": ["city", "town", "location_city"],
+        "address": ["address", "street_address", "street"],
+        "zip": ["zip", "zipcode", "zip_code", "postal_code", "postcode"],
     }
 
     def normalize_field_name(self, field: str) -> str:
@@ -454,12 +461,20 @@ class FormDataRetriever:
         Returns:
             Normalized canonical field name
         """
-        field_lower = field.lower().strip().replace("-", "_")
+        field_lower = field.lower().strip().replace("-", "_").replace(" ", "_")
         
-        # First check for exact matches
+        # First check for exact matches (highest priority)
         for canonical, synonyms in self.FIELD_SYNONYMS.items():
             if field_lower in synonyms:
                 return canonical
+        
+        # Check for concatenated forms (e.g., "firstname" -> "first_name")
+        for canonical, synonyms in self.FIELD_SYNONYMS.items():
+            for syn in synonyms:
+                # Handle underscore-less versions (firstname vs first_name)
+                syn_no_underscore = syn.replace("_", "")
+                if field_lower == syn_no_underscore:
+                    return canonical
         
         # Then check if field contains a synonym (but must be a significant match)
         for canonical, synonyms in self.FIELD_SYNONYMS.items():
