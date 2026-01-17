@@ -1,126 +1,78 @@
-# KnowShowGo: Vision & Roadmap
+# KnowShowGo Vision
+
+Fuzzy ontology knowledge graph for agentic AI memory.
 
 ## What It Is
 
-KnowShowGo is a **fuzzy ontology knowledge graph** that combines:
-- Semantic embeddings for similarity-based matching
-- Prototype-based concept modeling
-- Graph relationships for contextual reasoning
-- Pattern learning for procedural automation
+KnowShowGo (KSG) is a semantic memory system that:
 
-**Unique capabilities** (no competitor has these):
-- Pattern Evolution (transfer between contexts)
-- Centroid-based embeddings (concepts evolve toward usage)
-- Auto-generalization (system creates abstractions automatically)
-- First-class edges (relationships are searchable)
+1. **Stores patterns** - Procedures, forms, concepts as nodes
+2. **Searches semantically** - Embedding-based similarity
+3. **Evolves concepts** - Centroids drift toward usage
+4. **Generalizes** - Auto-creates abstract patterns from exemplars
 
----
+## Unique Capabilities
 
-## Current State
+| Feature | Description |
+|---------|-------------|
+| **Fuzzy Ontology** | Concepts have embeddings, not rigid schemas |
+| **Pattern Evolution** | Learn → Transfer → Generalize cycle |
+| **Centroid Embeddings** | Concepts drift toward actual usage |
+| **First-Class Edges** | Relationships are searchable |
+| **Multi-Backend** | NetworkX, ArangoDB, ChromaDB |
 
-| Component | Status |
-|-----------|--------|
-| Core API | ✅ Complete (~1,500 lines) |
-| Pattern Evolution | ✅ Complete |
-| Centroid Embeddings | ✅ Complete |
-| First-Class Edges | ✅ Complete |
-| Service Layer | ✅ Complete |
-| Tests | ✅ 83+ KnowShowGo tests |
+## Current Implementation
 
----
+```python
+# Store a pattern
+ksg.store_cpms_pattern("login_linkedin", {...})
 
-## Gap to Commercial Product
+# Find similar patterns
+patterns = ksg.find_similar_patterns("website login")
 
-| Capability | Current | Year 1 Target | Gap |
-|------------|---------|---------------|-----|
-| Core Functionality | ✅ | ✅ | LOW |
-| Embeddings | Content-only | Hybrid (content+structure) | MEDIUM |
-| Graph-Aware Search | ❌ | ✅ | HIGH |
-| Cloud Service | ❌ | ✅ | HIGH |
-| LangChain Integration | ❌ | ✅ | HIGH |
+# Transfer pattern to new context
+new_pattern = ksg.transfer_pattern(
+    source_uuid,
+    target_context={"form_type": "github_login"}
+)
 
-**Time to commercial MVP**: ~5-6 months
-
----
+# Track success and generalize
+ksg.record_pattern_success(pattern_uuid)
+ksg.auto_generalize(pattern_uuid)
+```
 
 ## Market Opportunity
 
-| Market | Size | KnowShowGo Position |
-|--------|------|---------------------|
-| AI Agent Memory | $100B+ by 2030 | **Only solution with pattern evolution** |
-| Vector DBs | $5B+ | Differentiated (graph + procedures) |
-| Knowledge Graphs | $3B+ | Differentiated (embeddings + fuzzy) |
+### The Problem
+Every AI agent builds its own memory from scratch. There's no standard for semantic memory that:
+- Transfers patterns between contexts
+- Auto-generalizes from experience
+- Evolves with usage
 
----
+### The Solution
+KnowShowGo as a **Memory-as-a-Service** for AI agents.
 
-## Technical Roadmap
+## Roadmap
 
-### Phase 1: Hybrid Embeddings (2026 Q3-Q4)
-- Add structural features to embeddings
-- Neighbor aggregation
-- A/B test in production
+| Phase | Focus |
+|-------|-------|
+| **Now** | Embedded in OSL Agent, prove the concept |
+| **Next** | Standalone service, REST API |
+| **Future** | Multi-agent memory, GNN embeddings |
 
-### Phase 2: GraphSAGE (2027 Q1-Q2)
-- GNN-based embeddings
-- Attention-based aggregation
-- Multi-hop relationships
+## Technical Evolution
 
-### Phase 3: Hyperbolic Embeddings (2027 Q3-Q4)
-- Poincaré ball for hierarchies
-- 10x fewer dimensions needed
-- Natural taxonomy representation
+Future directions:
+- **Graph Neural Networks** - Learn from graph structure
+- **Hyperbolic Embeddings** - Better hierarchy representation
+- **Temporal Evolution** - Track concept drift over time
 
-### Phase 4: Temporal (2028+)
-- Embedding snapshots over time
-- Concept drift detection
-- Predictive recommendations
+## Valuation Potential
 
----
+| Timeline | Value |
+|----------|-------|
+| Now (embedded) | Part of OSL Agent value |
+| Standalone service | $5-20M if adopted |
+| Market standard | $50-100M+ company |
 
-## Revenue Projections
-
-| Year | Target | Key Milestone |
-|------|--------|---------------|
-| 1 | $8M ARR | LangChain integration, cloud launch |
-| 2 | $40M ARR | Platform standard, enterprise |
-| 3 | $120M ARR | Market leader |
-| 5 | $500M+ ARR | Category dominance |
-
----
-
-## Use Cases
-
-### Current (Implemented)
-- Personal assistant memory
-- Form pattern learning & autofill
-- Procedure learning & reuse
-
-### Near-term (6-18 months)
-- Enterprise knowledge management
-- Customer service automation
-- Legal document analysis
-
-### Long-term (3-5 years)
-- Digital twin knowledge layer
-- Autonomous agent memory
-- Personalized medicine knowledge
-
----
-
-## Competitive Advantage
-
-| vs. Pinecone | vs. Neo4j | vs. Mem0 |
-|--------------|-----------|----------|
-| + Graph relationships | + Native embeddings | + Pattern evolution |
-| + Procedure learning | + Fuzzy matching | + Auto-generalization |
-| + Pattern evolution | + Learning | + Centroid drift |
-
----
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `src/personal_assistant/knowshowgo.py` | Core implementation |
-| `docs/KNOWSHOWGO-SERVICE-HANDOFF.md` | For standalone service |
-| `tests/test_knowshowgo*.py` | Test suite |
+The key: **Prove it works** in OSL Agent first, then spin out.

@@ -1,93 +1,92 @@
 # Setup Guide
 
+## Prerequisites
+
+- **Python 3.12+**
+- **Poetry** (recommended) or pip
+- **OpenAI API key**
+
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# Clone and install
+git clone <repo>
+cd osl-agent-prototype
 poetry install
-
-# 2. Install Playwright browsers
 poetry run playwright install --with-deps chromium
 
-# 3. Copy environment template
+# Configure
 cp .env.example .env.local
+# Edit .env.local:
+OPENAI_API_KEY=sk-your-key-here
 
-# 4. Edit .env.local with your keys (see below)
-
-# 5. Run tests
+# Test
 poetry run pytest
 
-# 6. Start service
+# Run
 poetry run python -m src.personal_assistant.service
 ```
 
----
-
 ## Environment Variables
 
-Create `.env.local` with:
+Create `.env.local` in project root:
 
 ```bash
-# === OpenAI (Required) ===
+# Required
 OPENAI_API_KEY=sk-...
-USE_FAKE_OPENAI=0
 
-# === ArangoDB (Optional - for persistent memory) ===
+# Optional - Persistent Memory (ArangoDB)
 ARANGO_URL=https://your-instance.arangodb.cloud:8529
 ARANGO_DB=osl-agent
 ARANGO_USER=root
 ARANGO_PASSWORD=...
-ARANGO_VERIFY=true
 
-# === Features ===
-USE_PLAYWRIGHT=1
-USE_CPMS_FOR_FORMS=1
-
-# === KnowShowGo Service (Optional) ===
-# KNOWSHOWGO_URL=http://localhost:8001
+# Optional - Features
+USE_PLAYWRIGHT=1           # Enable web automation
+USE_CPMS_FOR_FORMS=1       # Enable CPMS form detection
 ```
 
----
+## Running
 
-## API Keys
+### CLI Mode
+```bash
+poetry run python main.py
+```
 
-### OpenAI
-1. Go to https://platform.openai.com/api-keys
-2. Create new secret key
-3. Add to `.env.local` as `OPENAI_API_KEY`
+### HTTP Service
+```bash
+poetry run python -m src.personal_assistant.service
+# → http://localhost:8000/ui
+```
 
-### ArangoDB (Optional)
-1. Create free account at https://cloud.arangodb.com
-2. Create database
-3. Get connection details from dashboard
-4. Add to `.env.local`
+### Tests
+```bash
+# All tests
+poetry run pytest
 
----
+# Specific file
+poetry run pytest tests/test_agent.py -v
 
-## Running Modes
+# With coverage
+poetry run pytest --cov=src
+```
 
-| Mode | Config | Use Case |
-|------|--------|----------|
-| **Mock** | `USE_FAKE_OPENAI=1` | Fast testing, no API costs |
-| **Live** | `USE_FAKE_OPENAI=0` | Real LLM responses |
-| **Full** | + `ARANGO_URL` set | Persistent memory |
+## Memory Backends
 
----
+| Backend | When to Use |
+|---------|-------------|
+| NetworkX (default) | Testing, development |
+| ChromaDB | Local persistence |
+| ArangoDB | Production, cloud |
+
+The agent auto-detects available backends.
 
 ## Troubleshooting
 
-### Playwright not working
-```bash
-poetry run playwright install --with-deps chromium
-```
+**OpenAI errors**: Check `OPENAI_API_KEY` is set correctly
 
-### ArangoDB SSL errors
-```bash
-# In .env.local
-ARANGO_VERIFY=false
-```
+**Playwright errors**: Run `poetry run playwright install --with-deps chromium`
 
-### Import errors
-```bash
-poetry install
-```
+**Import errors**: Run `poetry install` again
+
+**Test failures**: Check `.env.local` has correct values
