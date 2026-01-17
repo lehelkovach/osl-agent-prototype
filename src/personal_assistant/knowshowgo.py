@@ -28,6 +28,41 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
+def vector_add(a: List[float], b: List[float]) -> List[float]:
+    """Add two vectors element-wise."""
+    if not a:
+        return b or []
+    if not b:
+        return a
+    if len(a) != len(b):
+        return a  # Fallback
+    return [x + y for x, y in zip(a, b)]
+
+
+def vector_scale(v: List[float], scalar: float) -> List[float]:
+    """Scale a vector by a scalar."""
+    if not v or scalar == 0:
+        return v or []
+    return [x * scalar for x in v]
+
+
+def compute_centroid(embeddings: List[List[float]]) -> List[float]:
+    """Compute centroid (average) of a list of embeddings."""
+    if not embeddings:
+        return []
+    if len(embeddings) == 1:
+        return embeddings[0]
+    
+    dim = len(embeddings[0])
+    centroid = [0.0] * dim
+    for emb in embeddings:
+        for i, v in enumerate(emb):
+            centroid[i] += v
+    
+    n = len(embeddings)
+    return [v / n for v in centroid]
+
+
 class KnowShowGoAPI:
     """
     KnowShowGo API: A fuzzy ontology knowledge graph.
@@ -730,6 +765,332 @@ class KnowShowGoAPI:
             "edge_uuids": edge_uuids,
             "object_property_uuids": object_property_uuids,
         }
+
+    # =========================================================================
+    # CENTROID-BASED EMBEDDING EVOLUTION
+    # Concepts evolve their embeddings based on exemplar centroids
+    # =========================================================================
+
+    def add_exemplar(
+        self,
+        concept_uuid: str,
+        exemplar_embedding: List[float],
+        exemplar_uuid: Optional[str] = None,
+        provenance: Optional[Provenance] = None,
+    ) -> Dict[str, Any]:
+        """
+        Add an exemplar to a concept and update its centroid embedding.
+        
+        The concept's embedding evolves to be the centroid (average) of all
+        its exemplars. This allows concepts to "drift" toward their actual
+        usage patterns over time.
+        
+        Args:
+            concept_uuid: UUID of the concept/prototype to update
+            exemplar_embedding: Embedding of the new exemplar
+            exemplar_uuid: Optional UUID of the exemplar node (for linking)
+            provenance: Optional provenance
+            
+        Returns:
+            Dict with updated embedding info
+        """
+        prov = provenance or Provenance(
+            source="exemplar",
+            ts=datetime.now(timezone.utc).isoformat(),
+            confidence=1.0,
+            trace_id="knowshowgo-centroid",
+        )
+        
+        concept = self._get_concept_by_uuid(concept_uuid)
+        if not concept:
+            return {"error": "Concept not found", "updated": False}
+        
+        # Get current embedding state
+        props = concept.get("props") or {}
+        current_embedding = concept.get("llm_embedding") or []
+        embedding_sum = props.get("_embedding_sum") or current_embedding
+        exemplar_count = props.get("_exemplar_count", 1)
+        
+        # Update sum and count
+        new_sum = vector_add(embedding_sum, exemplar_embedding)
+        new_count = exemplar_count + 1
+        
+        # Compute new centroid
+        new_centroid = vector_scale(new_sum, 1.0 / new_count)
+        
+        # Update concept
+        updated_props = {
+            **props,
+            "_embedding_sum": new_sum,
+            "_exemplar_count": new_count,
+            "_last_exemplar_ts": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        updated_node = Node(
+            uuid=concept_uuid,
+            kind=concept.get("kind", "Concept"),
+            labels=concept.get("labels", []),
+            props=updated_props,
+            llm_embedding=new_centroid,
+        )
+        self.memory.upsert(updated_node, prov, embedding_request=False)
+        
+        # Link exemplar if provided
+        if exemplar_uuid:
+            edge = Edge(
+                from_node=concept_uuid,
+                to_node=exemplar_uuid,
+                rel="has_exemplar",
+                props={"order": new_count - 1},
+            )
+            self.memory.upsert(edge, prov, embedding_request=False)
+        
+        return {
+            "updated": True,
+            "concept_uuid": concept_uuid,
+            "exemplar_count": new_count,
+            "embedding_drift": cosine_similarity(current_embedding, new_centroid) if current_embedding else 1.0,
+        }
+
+    def get_concept_centroid(self, concept_uuid: str) -> Optional[List[float]]:
+        """
+        Get the current centroid embedding for a concept.
+        
+        Returns the embedding which represents the average of all exemplars.
+        """
+        concept = self._get_concept_by_uuid(concept_uuid)
+        if not concept:
+            return None
+        return concept.get("llm_embedding")
+
+    def recompute_centroid(
+        self,
+        concept_uuid: str,
+        provenance: Optional[Provenance] = None,
+    ) -> Dict[str, Any]:
+        """
+        Recompute a concept's centroid from all linked exemplars.
+        
+        Useful after exemplars have been added/removed or for consistency checks.
+        """
+        prov = provenance or Provenance(
+            source="recompute",
+            ts=datetime.now(timezone.utc).isoformat(),
+            confidence=1.0,
+            trace_id="knowshowgo-recompute",
+        )
+        
+        concept = self._get_concept_by_uuid(concept_uuid)
+        if not concept:
+            return {"error": "Concept not found", "recomputed": False}
+        
+        # Collect all exemplar embeddings
+        exemplar_embeddings = []
+        
+        # Check for linked exemplars via edges
+        if hasattr(self.memory, "edges"):
+            for edge_uuid, edge in self.memory.edges.items():
+                if edge.from_node == concept_uuid and edge.rel == "has_exemplar":
+                    exemplar = self._get_concept_by_uuid(edge.to_node)
+                    if exemplar:
+                        emb = exemplar.get("llm_embedding")
+                        if emb:
+                            exemplar_embeddings.append(emb)
+        
+        if not exemplar_embeddings:
+            return {"recomputed": False, "reason": "no exemplars found"}
+        
+        # Compute new centroid
+        new_centroid = compute_centroid(exemplar_embeddings)
+        new_sum = [0.0] * len(new_centroid)
+        for emb in exemplar_embeddings:
+            new_sum = vector_add(new_sum, emb)
+        
+        # Update concept
+        props = concept.get("props") or {}
+        updated_props = {
+            **props,
+            "_embedding_sum": new_sum,
+            "_exemplar_count": len(exemplar_embeddings),
+            "_recomputed_ts": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        updated_node = Node(
+            uuid=concept_uuid,
+            kind=concept.get("kind", "Concept"),
+            labels=concept.get("labels", []),
+            props=updated_props,
+            llm_embedding=new_centroid,
+        )
+        self.memory.upsert(updated_node, prov, embedding_request=False)
+        
+        return {
+            "recomputed": True,
+            "concept_uuid": concept_uuid,
+            "exemplar_count": len(exemplar_embeddings),
+        }
+
+    # =========================================================================
+    # FIRST-CLASS EDGES (Edge as Node with mirrored attributes)
+    # Future: Full implementation in separate KnowShowGo repo
+    # =========================================================================
+
+    def create_relationship(
+        self,
+        from_uuid: str,
+        to_uuid: str,
+        rel_type: str,
+        properties: Optional[Dict[str, Any]] = None,
+        embedding: Optional[List[float]] = None,
+        provenance: Optional[Provenance] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a first-class relationship (edge as node).
+        
+        This creates:
+        1. A Relationship node with the edge properties and embedding
+        2. Edges connecting from_node → relationship → to_node
+        3. Mirrored attributes on both endpoints
+        
+        This enables searching for relationships by similarity.
+        
+        Args:
+            from_uuid: Source node UUID
+            to_uuid: Target node UUID
+            rel_type: Relationship type (e.g., "uses", "depends_on", "similar_to")
+            properties: Optional properties for the relationship
+            embedding: Optional embedding for the relationship (for similarity search)
+            provenance: Optional provenance
+            
+        Returns:
+            Dict with relationship_uuid and edge_uuids
+        """
+        prov = provenance or Provenance(
+            source="relationship",
+            ts=datetime.now(timezone.utc).isoformat(),
+            confidence=1.0,
+            trace_id="knowshowgo-rel",
+        )
+        
+        props = properties or {}
+        
+        # Generate embedding if not provided and we have embed_fn
+        if not embedding and self.embed_fn:
+            # Get names of connected nodes for embedding
+            from_node = self._get_concept_by_uuid(from_uuid)
+            to_node = self._get_concept_by_uuid(to_uuid)
+            from_name = (from_node or {}).get("props", {}).get("name", "")
+            to_name = (to_node or {}).get("props", {}).get("name", "")
+            try:
+                embedding = self.embed_fn(f"{from_name} {rel_type} {to_name}")
+            except Exception:
+                embedding = None
+        
+        # Create Relationship node (edge as first-class citizen)
+        rel_node = Node(
+            kind="Relationship",
+            labels=["Relationship", rel_type],
+            props={
+                **props,
+                "rel_type": rel_type,
+                "from_uuid": from_uuid,
+                "to_uuid": to_uuid,
+            },
+            llm_embedding=embedding,
+        )
+        self.memory.upsert(rel_node, prov, embedding_request=bool(embedding))
+        
+        # Create edges: from → rel, rel → to
+        from_edge = Edge(
+            from_node=from_uuid,
+            to_node=rel_node.uuid,
+            rel="has_outgoing",
+            props={"rel_type": rel_type},
+        )
+        to_edge = Edge(
+            from_node=rel_node.uuid,
+            to_node=to_uuid,
+            rel="points_to",
+            props={"rel_type": rel_type},
+        )
+        self.memory.upsert(from_edge, prov, embedding_request=False)
+        self.memory.upsert(to_edge, prov, embedding_request=False)
+        
+        # Mirror attributes on endpoints (simplified version)
+        # Full implementation would update from_node and to_node with relationship references
+        # This is deferred to separate KnowShowGo repo for full implementation
+        
+        return {
+            "relationship_uuid": rel_node.uuid,
+            "from_edge_uuid": from_edge.uuid,
+            "to_edge_uuid": to_edge.uuid,
+            "rel_type": rel_type,
+        }
+
+    def search_relationships(
+        self,
+        query: str,
+        rel_type: Optional[str] = None,
+        top_k: int = 5,
+        min_similarity: float = 0.5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for relationships by similarity.
+        
+        Because relationships are first-class nodes with embeddings,
+        we can search for similar relationships.
+        
+        Args:
+            query: Search query (e.g., "authentication dependency")
+            rel_type: Optional filter by relationship type
+            top_k: Maximum results
+            min_similarity: Minimum similarity threshold
+            
+        Returns:
+            List of matching relationships
+        """
+        query_embedding = None
+        if self.embed_fn:
+            try:
+                query_embedding = self.embed_fn(query)
+            except Exception:
+                pass
+        
+        filters = {"kind": "Relationship"}
+        results = self.memory.search(
+            query,
+            top_k=top_k * 2,
+            filters=filters,
+            query_embedding=query_embedding,
+        )
+        
+        relationships = []
+        for r in results:
+            normalized = self._normalize_result(r)
+            props = normalized.get("props") or {}
+            
+            # Filter by rel_type if specified
+            if rel_type and props.get("rel_type") != rel_type:
+                continue
+            
+            # Calculate similarity if we have embeddings
+            similarity = 0.7  # Default
+            stored_emb = normalized.get("llm_embedding")
+            if query_embedding and stored_emb:
+                similarity = cosine_similarity(query_embedding, stored_emb)
+            
+            if similarity >= min_similarity:
+                relationships.append({
+                    "uuid": normalized.get("uuid"),
+                    "rel_type": props.get("rel_type"),
+                    "from_uuid": props.get("from_uuid"),
+                    "to_uuid": props.get("to_uuid"),
+                    "similarity": similarity,
+                    "props": props,
+                })
+        
+        relationships.sort(key=lambda x: x["similarity"], reverse=True)
+        return relationships[:top_k]
 
     # =========================================================================
     # PATTERN EVOLUTION METHODS
