@@ -1,6 +1,8 @@
-from typing import Dict, Any, List, Optional, Callable, Union
+from typing import Dict, Any, List, Optional, Callable, Union, Tuple
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+import logging
+import json
 
 from src.personal_assistant.models import Node, Edge, Provenance
 from src.personal_assistant.tools import MemoryTools
@@ -8,7 +10,22 @@ from src.personal_assistant.form_fingerprint import compute_form_fingerprint
 from src.personal_assistant.ksg_orm import KSGORM
 
 
+logger = logging.getLogger(__name__)
+
 EmbedFn = Callable[[str], List[float]]
+LLMFn = Callable[[str], str]  # Function that takes a prompt and returns LLM response
+
+
+def cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 class KnowShowGoAPI:
@@ -713,3 +730,726 @@ class KnowShowGoAPI:
             "edge_uuids": edge_uuids,
             "object_property_uuids": object_property_uuids,
         }
+
+    # =========================================================================
+    # PATTERN EVOLUTION METHODS
+    # These methods support the Learn → Recall → Execute → Adapt → Generalize loop
+    # =========================================================================
+
+    def find_similar_patterns(
+        self,
+        query: str,
+        pattern_type: Optional[str] = None,
+        top_k: int = 5,
+        min_similarity: float = 0.5,
+        exclude_uuids: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Find patterns similar to the query that could be transferred to a new situation.
+        
+        This is the foundation of pattern transfer - finding existing knowledge
+        that might apply to a novel situation.
+        
+        Args:
+            query: Description of the target situation (e.g., "checkout form on amazon.com")
+            pattern_type: Optional filter (e.g., "Procedure", "Pattern", "FormPattern")
+            top_k: Maximum results to return
+            min_similarity: Minimum similarity threshold (0.0-1.0)
+            exclude_uuids: UUIDs to exclude from results
+            
+        Returns:
+            List of similar patterns with similarity scores, sorted by relevance
+        """
+        exclude_uuids = exclude_uuids or []
+        
+        # Generate query embedding
+        query_embedding = None
+        if self.embed_fn:
+            try:
+                query_embedding = self.embed_fn(query)
+            except Exception as e:
+                logger.warning(f"Failed to generate query embedding: {e}")
+        
+        # Search for similar concepts
+        filters = {"kind": "Concept"}
+        results = self.memory.search(
+            query,
+            top_k=top_k * 3,  # Get more results to filter
+            filters=filters,
+            query_embedding=query_embedding,
+        )
+        
+        similar_patterns = []
+        for r in results:
+            normalized = self._normalize_result(r)
+            uuid = normalized.get("uuid")
+            
+            # Skip excluded UUIDs
+            if uuid in exclude_uuids:
+                continue
+            
+            # Filter by pattern type if specified
+            props = normalized.get("props") or {}
+            labels = normalized.get("labels") or []
+            
+            if pattern_type:
+                is_match = (
+                    pattern_type in labels or
+                    props.get("type") == pattern_type or
+                    props.get("pattern_type") == pattern_type or
+                    normalized.get("kind") == pattern_type
+                )
+                if not is_match:
+                    continue
+            
+            # Calculate similarity if we have embeddings
+            similarity = 0.7  # Default if no embeddings
+            stored_embedding = normalized.get("llm_embedding")
+            if query_embedding and stored_embedding:
+                similarity = cosine_similarity(query_embedding, stored_embedding)
+            
+            if similarity >= min_similarity:
+                similar_patterns.append({
+                    "uuid": uuid,
+                    "name": props.get("name") or labels[0] if labels else "unknown",
+                    "similarity": similarity,
+                    "props": props,
+                    "labels": labels,
+                    "pattern_data": props.get("pattern_data"),
+                    "steps": props.get("steps"),
+                    "selectors": props.get("selectors"),
+                })
+        
+        # Sort by similarity
+        similar_patterns.sort(key=lambda x: x["similarity"], reverse=True)
+        return similar_patterns[:top_k]
+
+    def transfer_pattern(
+        self,
+        source_pattern_uuid: str,
+        target_context: Dict[str, Any],
+        llm_fn: Optional[LLMFn] = None,
+        provenance: Optional[Provenance] = None,
+    ) -> Dict[str, Any]:
+        """
+        Transfer a pattern from one context to another using LLM reasoning.
+        
+        This is the core of pattern transfer - taking a working pattern and
+        adapting it to a new, similar situation.
+        
+        Args:
+            source_pattern_uuid: UUID of the source pattern to transfer
+            target_context: Information about the target situation:
+                - url: Target URL (if web-related)
+                - fields: List of field names/labels in target
+                - form_type: Type of form (login, checkout, survey, etc.)
+                - description: Description of target task
+            llm_fn: Function to call LLM for reasoning (prompt -> response)
+            provenance: Optional provenance
+            
+        Returns:
+            Dict with:
+                - transferred_pattern: The adapted pattern
+                - field_mapping: How fields were mapped
+                - confidence: Confidence in the transfer
+                - new_pattern_uuid: UUID of stored transferred pattern (if stored)
+        """
+        prov = provenance or Provenance(
+            source="transfer",
+            ts=datetime.now(timezone.utc).isoformat(),
+            confidence=0.8,
+            trace_id="knowshowgo-transfer",
+        )
+        
+        # Load source pattern
+        source = self._get_concept_by_uuid(source_pattern_uuid)
+        if not source:
+            return {"error": "Source pattern not found", "transferred_pattern": None}
+        
+        source_props = source.get("props") or {}
+        
+        # Selectors may be in pattern_data (from store_cpms_pattern) or directly in props
+        pattern_data = source_props.get("pattern_data") or {}
+        if isinstance(pattern_data, dict):
+            source_selectors = pattern_data.get("selectors") or source_props.get("selectors") or {}
+            source_steps = pattern_data.get("steps") or source_props.get("steps") or []
+        else:
+            source_selectors = source_props.get("selectors") or {}
+            source_steps = source_props.get("steps") or []
+        
+        source_fields = list(source_selectors.keys()) if source_selectors else []
+        
+        target_fields = target_context.get("fields") or []
+        target_url = target_context.get("url", "")
+        target_description = target_context.get("description", "")
+        
+        # If no LLM function provided, do simple field name matching
+        if not llm_fn:
+            field_mapping = self._simple_field_mapping(source_fields, target_fields)
+            confidence = 0.6
+        else:
+            # Use LLM to reason about the transfer
+            prompt = self._build_transfer_prompt(
+                source_name=source_props.get("name", "unknown"),
+                source_fields=source_fields,
+                source_selectors=source_selectors,
+                target_fields=target_fields,
+                target_url=target_url,
+                target_description=target_description,
+            )
+            
+            try:
+                llm_response = llm_fn(prompt)
+                field_mapping, confidence = self._parse_transfer_response(llm_response)
+            except Exception as e:
+                logger.warning(f"LLM transfer failed: {e}, falling back to simple mapping")
+                field_mapping = self._simple_field_mapping(source_fields, target_fields)
+                confidence = 0.5
+        
+        # Build transferred pattern
+        transferred_selectors = {}
+        for target_field, source_field in field_mapping.items():
+            if source_field and source_field in source_selectors:
+                # Adapt the selector for the new context
+                transferred_selectors[target_field] = self._adapt_selector(
+                    source_selectors[source_field],
+                    target_field
+                )
+        
+        # Build transferred steps (if procedure)
+        transferred_steps = []
+        for step in source_steps:
+            transferred_step = step.copy()
+            params = transferred_step.get("params", {})
+            # Update URL if present
+            if "url" in params and target_url:
+                transferred_step["params"] = {**params, "url": target_url}
+            # Update selectors in params
+            if "selector" in params:
+                for target_field, source_field in field_mapping.items():
+                    if source_field in params["selector"]:
+                        transferred_step["params"]["selector"] = params["selector"].replace(
+                            source_field, target_field
+                        )
+            transferred_steps.append(transferred_step)
+        
+        transferred_pattern = {
+            "name": f"Transferred: {source_props.get('name', 'pattern')} → {target_url or target_description}",
+            "source_pattern_uuid": source_pattern_uuid,
+            "selectors": transferred_selectors,
+            "steps": transferred_steps if transferred_steps else None,
+            "field_mapping": field_mapping,
+            "target_url": target_url,
+            "transfer_confidence": confidence,
+            "type": "transferred",
+        }
+        
+        # Store the transferred pattern if confidence is high enough
+        new_pattern_uuid = None
+        if confidence >= 0.6 and self.embed_fn:
+            try:
+                embedding = self.embed_fn(
+                    f"{transferred_pattern['name']} {target_url} {' '.join(target_fields)}"
+                )
+                new_pattern_uuid = self.store_cpms_pattern(
+                    pattern_name=transferred_pattern["name"],
+                    pattern_data=transferred_pattern,
+                    embedding=embedding,
+                    concept_uuid=source_pattern_uuid,  # Link to source
+                    provenance=prov,
+                )
+                
+                # Create transfer edge
+                self.add_association(
+                    from_concept_uuid=source_pattern_uuid,
+                    to_concept_uuid=new_pattern_uuid,
+                    relation_type="transferred_to",
+                    strength=confidence,
+                    props={"field_mapping": field_mapping},
+                    provenance=prov,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to store transferred pattern: {e}")
+        
+        return {
+            "transferred_pattern": transferred_pattern,
+            "field_mapping": field_mapping,
+            "confidence": confidence,
+            "new_pattern_uuid": new_pattern_uuid,
+        }
+
+    def record_pattern_success(
+        self,
+        pattern_uuid: str,
+        context: Optional[Dict[str, Any]] = None,
+        provenance: Optional[Provenance] = None,
+    ) -> Dict[str, Any]:
+        """
+        Record a successful pattern application. This feeds into auto-generalization.
+        
+        Args:
+            pattern_uuid: UUID of the pattern that succeeded
+            context: Optional context about the success (url, fields filled, etc.)
+            provenance: Optional provenance
+            
+        Returns:
+            Dict with success_count and whether generalization was triggered
+        """
+        prov = provenance or Provenance(
+            source="execution",
+            ts=datetime.now(timezone.utc).isoformat(),
+            confidence=1.0,
+            trace_id="knowshowgo-success",
+        )
+        
+        # Get current pattern
+        pattern = self._get_concept_by_uuid(pattern_uuid)
+        if not pattern:
+            return {"error": "Pattern not found", "success_count": 0}
+        
+        # Get props - handle both dict and direct attribute access
+        if isinstance(pattern, dict):
+            props = pattern.get("props") or {}
+            kind = pattern.get("kind", "Concept")
+            labels = pattern.get("labels", [])
+            embedding = pattern.get("llm_embedding")
+        else:
+            props = getattr(pattern, "props", {}) or {}
+            kind = getattr(pattern, "kind", "Concept")
+            labels = getattr(pattern, "labels", [])
+            embedding = getattr(pattern, "llm_embedding", None)
+        
+        success_count = props.get("success_count", 0) + 1
+        
+        # Update success count
+        updated_props = {
+            **props,
+            "success_count": success_count,
+            "last_success": datetime.now(timezone.utc).isoformat(),
+            "last_success_context": context,
+        }
+        
+        # Update the concept
+        updated_node = Node(
+            uuid=pattern_uuid,
+            kind=kind,
+            labels=labels if isinstance(labels, list) else list(labels) if labels else [],
+            props=updated_props,
+            llm_embedding=embedding,
+        )
+        self.memory.upsert(updated_node, prov, embedding_request=False)
+        
+        return {
+            "success_count": success_count,
+            "pattern_uuid": pattern_uuid,
+        }
+
+    def auto_generalize(
+        self,
+        pattern_uuid: str,
+        min_similar: int = 2,
+        min_similarity: float = 0.75,
+        llm_fn: Optional[LLMFn] = None,
+        provenance: Optional[Provenance] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Automatically detect and merge similar successful patterns into a generalized pattern.
+        
+        Called after a pattern succeeds. Checks if there are enough similar successful
+        patterns to warrant generalization.
+        
+        Args:
+            pattern_uuid: UUID of the pattern that just succeeded
+            min_similar: Minimum number of similar patterns needed to generalize
+            min_similarity: Minimum similarity threshold for patterns to be grouped
+            llm_fn: Optional LLM function for generating generalized description
+            provenance: Optional provenance
+            
+        Returns:
+            Dict with generalized pattern info, or None if no generalization occurred
+        """
+        prov = provenance or Provenance(
+            source="auto-generalize",
+            ts=datetime.now(timezone.utc).isoformat(),
+            confidence=0.9,
+            trace_id="knowshowgo-generalize",
+        )
+        
+        # Get the triggering pattern
+        pattern = self._get_concept_by_uuid(pattern_uuid)
+        if not pattern:
+            return None
+        
+        props = pattern.get("props") or {}
+        pattern_name = props.get("name", "")
+        
+        # Check if already generalized
+        if props.get("type") == "generalized":
+            return None
+        
+        # Check if already has a parent generalization
+        # (We don't want to re-generalize exemplars)
+        if props.get("generalized_by"):
+            return None
+        
+        # Find similar successful patterns
+        similar = self.find_similar_patterns(
+            query=pattern_name,
+            top_k=10,
+            min_similarity=min_similarity,
+            exclude_uuids=[pattern_uuid],
+        )
+        
+        # Filter to only successful patterns
+        successful_similar = []
+        for s in similar:
+            s_props = s.get("props") or {}
+            if s_props.get("success_count", 0) > 0:
+                successful_similar.append(s)
+        
+        # Check if we have enough similar successful patterns
+        if len(successful_similar) < min_similar - 1:  # -1 because we count the trigger pattern
+            return None
+        
+        # Collect exemplar UUIDs (including the triggering pattern)
+        exemplar_uuids = [pattern_uuid] + [s["uuid"] for s in successful_similar[:min_similar - 1]]
+        
+        # Generate generalized name and description
+        exemplar_names = [pattern_name] + [s.get("name", "") for s in successful_similar[:min_similar - 1]]
+        
+        if llm_fn:
+            generalized_name, generalized_description = self._generate_generalization_with_llm(
+                exemplar_names, llm_fn
+            )
+        else:
+            generalized_name = self._extract_common_pattern(exemplar_names)
+            generalized_description = f"Generalized pattern from {len(exemplar_uuids)} similar patterns"
+        
+        # Generate embedding for generalized concept (average of exemplars)
+        generalized_embedding = self._average_embeddings(exemplar_uuids)
+        
+        # Create generalized pattern
+        generalized_uuid = self.generalize_concepts(
+            exemplar_uuids=exemplar_uuids,
+            generalized_name=generalized_name,
+            generalized_description=generalized_description,
+            generalized_embedding=generalized_embedding,
+            provenance=prov,
+        )
+        
+        # Extract common selectors/steps
+        common_selectors = self._extract_common_selectors(exemplar_uuids)
+        common_steps = self._extract_common_steps(exemplar_uuids)
+        
+        # Update generalized pattern with common elements
+        if common_selectors or common_steps:
+            gen_pattern = self._get_concept_by_uuid(generalized_uuid)
+            if gen_pattern:
+                gen_props = gen_pattern.get("props") or {}
+                gen_props["common_selectors"] = common_selectors
+                gen_props["common_steps"] = common_steps
+                gen_props["exemplar_count"] = len(exemplar_uuids)
+                
+                updated_node = Node(
+                    uuid=generalized_uuid,
+                    kind=gen_pattern.get("kind", "Concept"),
+                    labels=gen_pattern.get("labels", []),
+                    props=gen_props,
+                    llm_embedding=gen_pattern.get("llm_embedding"),
+                )
+                self.memory.upsert(updated_node, prov, embedding_request=False)
+        
+        logger.info(f"Auto-generalized {len(exemplar_uuids)} patterns into '{generalized_name}'")
+        
+        return {
+            "generalized_uuid": generalized_uuid,
+            "generalized_name": generalized_name,
+            "exemplar_count": len(exemplar_uuids),
+            "exemplar_uuids": exemplar_uuids,
+            "common_selectors": common_selectors,
+            "common_steps": common_steps,
+        }
+
+    def find_generalized_pattern(
+        self,
+        query: str,
+        top_k: int = 3,
+        min_similarity: float = 0.6,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find a generalized pattern that matches the query.
+        
+        Generalized patterns are preferred because they represent proven,
+        cross-situation knowledge.
+        
+        Args:
+            query: Description of the target situation
+            top_k: Number of candidates to consider
+            min_similarity: Minimum similarity threshold
+            
+        Returns:
+            Best matching generalized pattern, or None
+        """
+        similar = self.find_similar_patterns(
+            query=query,
+            top_k=top_k * 2,
+            min_similarity=min_similarity,
+        )
+        
+        # Prefer generalized patterns
+        for s in similar:
+            props = s.get("props") or {}
+            if props.get("type") == "generalized":
+                return s
+        
+        return None
+
+    # =========================================================================
+    # HELPER METHODS FOR PATTERN EVOLUTION
+    # =========================================================================
+
+    def _get_concept_by_uuid(self, uuid: str) -> Optional[Dict[str, Any]]:
+        """Get a concept by UUID."""
+        # Try direct lookup first if memory has nodes dict
+        if hasattr(self.memory, "nodes") and uuid in self.memory.nodes:
+            node = self.memory.nodes[uuid]
+            if hasattr(node, "__dict__"):
+                return node.__dict__
+            return node
+        
+        # Fallback to search
+        results = self.memory.search(uuid, top_k=10)
+        for r in results:
+            normalized = self._normalize_result(r)
+            if normalized.get("uuid") == uuid:
+                return normalized
+        return None
+
+    def _simple_field_mapping(
+        self,
+        source_fields: List[str],
+        target_fields: List[str],
+    ) -> Dict[str, str]:
+        """Simple field mapping based on name similarity."""
+        mapping = {}
+        used_sources = set()
+        
+        # Normalize field names for matching
+        def normalize(name: str) -> str:
+            return name.lower().replace("_", "").replace("-", "").replace(" ", "")
+        
+        for target in target_fields:
+            target_norm = normalize(target)
+            best_match = None
+            best_score = 0
+            
+            for source in source_fields:
+                if source in used_sources:
+                    continue
+                source_norm = normalize(source)
+                
+                # Exact match
+                if source_norm == target_norm:
+                    best_match = source
+                    best_score = 1.0
+                    break
+                
+                # Substring match
+                if source_norm in target_norm or target_norm in source_norm:
+                    score = min(len(source_norm), len(target_norm)) / max(len(source_norm), len(target_norm))
+                    if score > best_score:
+                        best_match = source
+                        best_score = score
+            
+            if best_match and best_score >= 0.5:
+                mapping[target] = best_match
+                used_sources.add(best_match)
+        
+        return mapping
+
+    def _build_transfer_prompt(
+        self,
+        source_name: str,
+        source_fields: List[str],
+        source_selectors: Dict[str, str],
+        target_fields: List[str],
+        target_url: str,
+        target_description: str,
+    ) -> str:
+        """Build prompt for LLM-assisted pattern transfer."""
+        return f"""You are helping transfer a form-filling pattern to a new context.
+
+SOURCE PATTERN: "{source_name}"
+Source fields: {json.dumps(source_fields)}
+Source selectors: {json.dumps(source_selectors)}
+
+TARGET CONTEXT:
+URL: {target_url}
+Description: {target_description}
+Target fields: {json.dumps(target_fields)}
+
+Task: Map each target field to the most appropriate source field.
+Consider semantic similarity (e.g., "email" matches "email_address", "username" matches "login").
+
+Respond with JSON only:
+{{
+    "field_mapping": {{"target_field": "source_field", ...}},
+    "confidence": 0.0-1.0,
+    "reasoning": "brief explanation"
+}}"""
+
+    def _parse_transfer_response(
+        self,
+        response: str,
+    ) -> Tuple[Dict[str, str], float]:
+        """Parse LLM response for transfer mapping."""
+        try:
+            # Try to extract JSON from response
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(response[start:end])
+                return data.get("field_mapping", {}), data.get("confidence", 0.7)
+        except Exception:
+            pass
+        return {}, 0.5
+
+    def _adapt_selector(self, source_selector: str, target_field: str) -> str:
+        """Adapt a selector for a new field context."""
+        # Common selector patterns
+        common_selectors = [
+            f"#{target_field}",
+            f"[name='{target_field}']",
+            f"[id='{target_field}']",
+            f"input[name='{target_field}']",
+        ]
+        return common_selectors[0]  # Return most common pattern
+
+    def _extract_common_pattern(self, names: List[str]) -> str:
+        """Extract common pattern from a list of names."""
+        if not names:
+            return "Generalized Pattern"
+        
+        # Find common words
+        word_sets = [set(name.lower().split()) for name in names if name]
+        if not word_sets:
+            return "Generalized Pattern"
+        
+        common_words = word_sets[0]
+        for ws in word_sets[1:]:
+            common_words &= ws
+        
+        # Remove common stopwords
+        stopwords = {"the", "a", "an", "to", "for", "on", "in", "at", "form", "pattern"}
+        common_words -= stopwords
+        
+        if common_words:
+            return f"Generalized {' '.join(sorted(common_words)).title()}"
+        
+        return "Generalized Pattern"
+
+    def _generate_generalization_with_llm(
+        self,
+        exemplar_names: List[str],
+        llm_fn: LLMFn,
+    ) -> Tuple[str, str]:
+        """Use LLM to generate a good name and description for generalized pattern."""
+        prompt = f"""Given these similar pattern names:
+{json.dumps(exemplar_names)}
+
+Generate a generalized name and description that captures their common essence.
+
+Respond with JSON only:
+{{"name": "short generalized name", "description": "what this pattern does"}}"""
+        
+        try:
+            response = llm_fn(prompt)
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start >= 0 and end > start:
+                data = json.loads(response[start:end])
+                return data.get("name", "Generalized Pattern"), data.get("description", "")
+        except Exception:
+            pass
+        
+        return self._extract_common_pattern(exemplar_names), f"Generalized from {len(exemplar_names)} patterns"
+
+    def _average_embeddings(self, uuids: List[str]) -> List[float]:
+        """Compute average embedding from multiple concepts."""
+        embeddings = []
+        for uuid in uuids:
+            concept = self._get_concept_by_uuid(uuid)
+            if concept:
+                emb = concept.get("llm_embedding")
+                if emb:
+                    embeddings.append(emb)
+        
+        if not embeddings:
+            return [0.0] * 10  # Fallback
+        
+        # Average the embeddings
+        dim = len(embeddings[0])
+        avg = [0.0] * dim
+        for emb in embeddings:
+            for i, v in enumerate(emb):
+                avg[i] += v
+        
+        return [v / len(embeddings) for v in avg]
+
+    def _extract_common_selectors(self, uuids: List[str]) -> Dict[str, List[str]]:
+        """Extract common selectors across patterns."""
+        all_selectors: Dict[str, List[str]] = {}
+        
+        for uuid in uuids:
+            concept = self._get_concept_by_uuid(uuid)
+            if not concept:
+                continue
+            props = concept.get("props") or {}
+            selectors = props.get("selectors") or {}
+            
+            for field, selector in selectors.items():
+                if field not in all_selectors:
+                    all_selectors[field] = []
+                all_selectors[field].append(selector)
+        
+        # Keep fields that appear in most patterns
+        threshold = len(uuids) * 0.5
+        common = {}
+        for field, selectors in all_selectors.items():
+            if len(selectors) >= threshold:
+                common[field] = selectors
+        
+        return common
+
+    def _extract_common_steps(self, uuids: List[str]) -> List[Dict[str, Any]]:
+        """Extract common step structure across patterns."""
+        all_steps: List[List[Dict[str, Any]]] = []
+        
+        for uuid in uuids:
+            concept = self._get_concept_by_uuid(uuid)
+            if not concept:
+                continue
+            props = concept.get("props") or {}
+            steps = props.get("steps") or []
+            if steps:
+                all_steps.append(steps)
+        
+        if not all_steps:
+            return []
+        
+        # Find common step structure (by tool sequence)
+        min_len = min(len(s) for s in all_steps)
+        common_steps = []
+        
+        for i in range(min_len):
+            tools_at_i = [s[i].get("tool") for s in all_steps if i < len(s)]
+            # If all have same tool at position i, include it
+            if len(set(tools_at_i)) == 1:
+                # Use first pattern's step as template
+                common_steps.append({
+                    "position": i,
+                    "tool": tools_at_i[0],
+                    "template": all_steps[0][i],
+                })
+        
+        return common_steps
