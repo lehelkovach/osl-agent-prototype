@@ -1,9 +1,11 @@
 # KnowShowGo Service Handoff Document
 
-**Date**: 2026-01-16  
+**Date**: 2026-01-17  
 **From**: OSL Agent Prototype  
 **To**: KnowShowGo Separate Repository  
-**Version**: 0.1.0
+**Version**: 0.2.0
+
+> **Latest Update**: Added Pattern Evolution (transfer/generalize), Centroid-Based Embedding Evolution, and First-Class Edges (relationships as searchable nodes).
 
 ---
 
@@ -359,6 +361,173 @@ curl -X POST http://localhost:8001/search \
 
 ---
 
+---
+
+## NEW: Pattern Evolution Methods (v0.2.0)
+
+These methods support the Learn → Transfer → Generalize loop:
+
+### Pattern Evolution API
+
+| Method | Purpose |
+|--------|---------|
+| `find_similar_patterns(query, top_k, min_similarity)` | Semantic search for transferable patterns |
+| `transfer_pattern(source_uuid, target_context, llm_fn)` | LLM-assisted field mapping between patterns |
+| `record_pattern_success(pattern_uuid, context)` | Track successful pattern applications |
+| `auto_generalize(pattern_uuid, min_similar, min_similarity)` | Auto-merge similar successful patterns |
+| `find_generalized_pattern(query)` | Prefer proven generalized patterns |
+
+### Usage Example
+```python
+# Find similar patterns for transfer
+similar = ksg.find_similar_patterns("checkout form", min_similarity=0.6)
+
+# Transfer pattern to new context
+result = ksg.transfer_pattern(
+    source_pattern_uuid=similar[0]["uuid"],
+    target_context={
+        "url": "https://newsite.com/checkout",
+        "fields": ["card_number", "expiry", "cvv"],
+    },
+    llm_fn=my_llm_function,  # Optional LLM for field mapping
+)
+
+# Record success and trigger auto-generalization
+ksg.record_pattern_success(pattern_uuid, context={"url": "..."})
+gen_result = ksg.auto_generalize(pattern_uuid, min_similar=2)
+```
+
+---
+
+## NEW: Centroid-Based Embedding Evolution (v0.2.0)
+
+Concepts evolve their embeddings based on exemplar centroids:
+
+### Centroid API
+
+| Method | Purpose |
+|--------|---------|
+| `add_exemplar(concept_uuid, exemplar_embedding, exemplar_uuid)` | Add exemplar, update centroid |
+| `get_concept_centroid(concept_uuid)` | Get current averaged embedding |
+| `recompute_centroid(concept_uuid)` | Recompute from all linked exemplars |
+
+### How It Works
+```python
+# Initial concept with embedding
+uuid = ksg.store_cpms_pattern("Login Pattern", {...}, embedding=[1.0, 0.0, ...])
+
+# As exemplars are added, embedding evolves toward centroid
+ksg.add_exemplar(uuid, exemplar_embedding=[0.5, 0.5, ...])
+ksg.add_exemplar(uuid, exemplar_embedding=[0.3, 0.7, ...])
+
+# Concept embedding is now average of all exemplars
+# Allows concepts to "drift" toward their actual usage patterns
+```
+
+### Storage
+Concepts track:
+- `_embedding_sum`: Running sum for incremental updates
+- `_exemplar_count`: Number of exemplars
+- `llm_embedding`: Current centroid (sum / count)
+
+---
+
+## NEW: First-Class Edges (Relationships as Nodes) (v0.2.0)
+
+Relationships are first-class citizens with embeddings:
+
+### Relationship API
+
+| Method | Purpose |
+|--------|---------|
+| `create_relationship(from_uuid, to_uuid, rel_type, properties, embedding)` | Create searchable relationship |
+| `search_relationships(query, rel_type, top_k)` | Find relationships by similarity |
+
+### Data Model
+```
+Relationship Node:
+├── uuid
+├── kind: "Relationship"
+├── labels: ["Relationship", rel_type]
+├── props:
+│   ├── rel_type: "depends_on"
+│   ├── from_uuid: <source>
+│   ├── to_uuid: <target>
+│   └── ...custom properties
+└── llm_embedding: [...]  # For similarity search
+
+Edges:
+├── from_node → relationship_node (has_outgoing)
+└── relationship_node → to_node (points_to)
+```
+
+### Usage
+```python
+# Create searchable relationship
+ksg.create_relationship(
+    from_uuid=login_form_uuid,
+    to_uuid=auth_service_uuid,
+    rel_type="requires",
+    properties={"strength": 0.9},
+)
+
+# Search for similar relationships
+results = ksg.search_relationships("authentication dependency")
+```
+
+---
+
+## Helper Functions (v0.2.0)
+
+```python
+from src.personal_assistant.knowshowgo import (
+    cosine_similarity,  # Compare two vectors
+    vector_add,         # Element-wise addition
+    vector_scale,       # Scalar multiplication
+    compute_centroid,   # Average of embeddings
+)
+```
+
+---
+
+## Files to Copy (Updated)
+
+From `/workspace/src/personal_assistant/`:
+- `knowshowgo.py` - **Updated with pattern evolution, centroids, relationships**
+- `knowshowgo_adapter.py`
+- `form_fingerprint.py`
+- `ksg_orm.py`
+- `ksg.py`
+
+From `/workspace/services/knowshowgo/`:
+- `service.py`, `client.py`, `models.py`
+- `tests/`
+
+From `/workspace/tests/`:
+- `test_knowshowgo_pattern_evolution.py` - **25 tests**
+- `test_knowshowgo_centroid_edges.py` - **18 tests**
+- `test_knowshowgo*.py` - Existing tests
+
+---
+
+## Test Coverage (Updated)
+
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `test_knowshowgo.py` | 2 | Core API |
+| `test_knowshowgo_adapter.py` | 10 | Backend switching |
+| `test_knowshowgo_associations.py` | 5 | Fuzzy edges |
+| `test_knowshowgo_dag_and_recall.py` | 3 | DAG operations |
+| `test_knowshowgo_generalization.py` | 5 | Concept generalization |
+| `test_knowshowgo_pattern_evolution.py` | 25 | **NEW** Transfer/generalize |
+| `test_knowshowgo_centroid_edges.py` | 18 | **NEW** Centroids/relationships |
+| `test_knowshowgo_recursive.py` | 5 | Recursive concepts |
+| `test_knowshowgo_service_integration.py` | 10 | HTTP service |
+
+**Total: 83+ KnowShowGo tests**
+
+---
+
 ## Next Steps for KnowShowGo Repository
 
 1. **Add service module** with the files listed above
@@ -367,6 +536,10 @@ curl -X POST http://localhost:8001/search \
 4. **Add rate limiting** for production use
 5. **Add Docker support** for containerized deployment
 6. **Add OpenAPI docs** at `/docs` endpoint (auto-generated by FastAPI)
+7. **NEW: Add pattern evolution endpoints** to HTTP service
+8. **NEW: Add centroid endpoints** to HTTP service
+9. **NEW: Add relationship endpoints** to HTTP service
+10. **FUTURE: Graph embeddings** (hybrid, GraphSAGE, hyperbolic) - see `KNOWSHOWGO-GRAPH-EMBEDDINGS-VISION.md`
 
 ---
 
