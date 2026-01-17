@@ -1,7 +1,7 @@
 # Master Plan: OSL Agent Prototype MVP
 
-**Date**: 2026-01-16  
-**Version**: v1.3.0-procedures-as-dags  
+**Date**: 2026-01-17  
+**Version**: v1.4.0-pattern-evolution  
 **Synthesized from**: Opus, GPT, Salvage (Claude/GPT-5.2/Gemini consensus)
 
 ---
@@ -28,13 +28,14 @@ This document merges planning from three sources into a unified roadmap:
 | Salvage Steps A-D | ✅ Complete (WorkingMemory, AsyncReplicator, Parser, Agent Integration) |
 | Milestone B | ✅ Complete (Domain-based credential preference) |
 | Milestone C | ✅ Complete (Selector adaptation with fallbacks) |
-| Tests | **535 passed**, 12 skipped |
+| Tests | **560+ passed**, 12 skipped |
 | Live Mode | ✅ **VERIFIED** - Real OpenAI + ArangoDB + Playwright |
 | LinkedIn Login | ✅ **WORKING** - Pattern learned and reused |
 | Novel Form Learning | ✅ **WORKING** - GitHub, etc. |
 | KnowShowGo Service | ✅ **COMPLETE** - Separate FastAPI service (port 8001) |
 | SafeShellExecutor | ✅ **COMPLETE** - Sandbox + rollback |
 | ProcedureManager | ✅ **COMPLETE** - LLM JSON to DAG |
+| Pattern Evolution | ✅ **COMPLETE** - Transfer, generalize, LLM-assisted |
 | Documentation | ✅ Updated |
 
 ---

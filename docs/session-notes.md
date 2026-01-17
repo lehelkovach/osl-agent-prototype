@@ -1,5 +1,53 @@
 # Session Notes
 
+## 2026-01-17: Pattern Evolution in KnowShowGo
+
+### Changes Made
+- **KnowShowGo Pattern Evolution**: Added methods to support Learn → Transfer → Generalize loop
+- **Agent Integration**: Wired pattern evolution into form autofill flow
+
+### New KnowShowGo Methods
+
+| Method | Purpose |
+|--------|---------|
+| `find_similar_patterns()` | Semantic search for transferable patterns |
+| `transfer_pattern()` | LLM-assisted field mapping between patterns |
+| `record_pattern_success()` | Track successful pattern applications |
+| `auto_generalize()` | Auto-detect and merge similar successful patterns |
+| `find_generalized_pattern()` | Prefer proven generalized patterns |
+
+### Pattern Evolution Flow
+```
+Learn: Store pattern after form detection
+   ↓
+Transfer: When new form has missing fields
+   → find_similar_patterns()
+   → transfer_pattern() with LLM reasoning
+   ↓
+Execute: Fill form with transferred selectors
+   ↓
+Success: record_pattern_success()
+   ↓
+Generalize: auto_generalize() if 2+ similar patterns succeed
+   → Creates parent "Generalized Pattern" concept
+   → Links exemplars as children
+```
+
+### Agent Integration
+- `_autofill_form()` now:
+  - Tries pattern transfer when fields are missing
+  - Records success after successful fill
+  - Triggers auto-generalization
+  - Returns `transferred_from` and `generalized_uuid`
+- `_llm_for_transfer()` helper wraps OpenAI for KnowShowGo operations
+
+### Test Results
+- **190 tests passing** (25 new pattern evolution tests + 165 existing)
+- All pattern evolution tests pass
+- Agent form autofill tests pass
+
+---
+
 ## 2026-01-16: LLM JSON to KnowShowGo DAG Procedures
 
 ### Changes Made
