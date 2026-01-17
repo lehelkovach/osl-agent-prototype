@@ -31,6 +31,9 @@ pytest-asyncio = "^1.3.0"
 [tool.poetry.scripts]
 agent-service = "src.personal_assistant.service:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"

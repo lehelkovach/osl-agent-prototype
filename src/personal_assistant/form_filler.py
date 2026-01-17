@@ -440,8 +440,8 @@ class FormDataRetriever:
         "last_name": ["last_name", "lastname", "surname", "family_name"],
         "email": ["email", "email_address", "e_mail", "emailaddress"],
         "phone": ["phone", "phone_number", "telephone", "mobile", "cell", "tel"],
-        "company": ["company", "company_name", "companyname", "employer", "workplace"],
-        "organization": ["organization", "organisation", "org"],
+        # Normalize organization -> company (treat as equivalent)
+        "company": ["company", "company_name", "companyname", "employer", "workplace", "organization", "organisation", "org"],
         "job_title": ["job_title", "jobtitle", "role", "position", "job_position", "title"],
         "industry": ["industry", "sector", "business_type"],
         "feedback": ["feedback", "comments", "additional_comments", "notes"],

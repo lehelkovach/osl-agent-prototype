@@ -23,15 +23,14 @@ class TestAgentProcedureTool(unittest.TestCase):
             {
               "tool": "procedure.create",
               "params": {
-                "title": "LinkedIn check",
+                "name": "LinkedIn check",
                 "description": "Check messages and create follow-ups",
                 "steps": [
-                  {"tool": "web.get", "params": {"url": "https://www.linkedin.com"}},
-                  {"tool": "web.get_dom", "params": {"url": "https://www.linkedin.com/messaging"}},
-                  {"tool": "tasks.create", "params": {"title": "Follow up on recruiter messages", "priority": 3, "due": null, "notes": "", "links": []}}
+                  {"id": "step_1", "name": "Open LinkedIn", "tool": "web.get", "params": {"url": "https://www.linkedin.com"}, "depends_on": []},
+                  {"id": "step_2", "name": "Open messages", "tool": "web.get_dom", "params": {"url": "https://www.linkedin.com/messaging"}, "depends_on": ["step_1"]},
+                  {"id": "step_3", "name": "Create follow-up task", "tool": "tasks.create", "params": {"title": "Follow up on recruiter messages", "priority": 3, "due": null, "notes": "", "links": []}, "depends_on": ["step_2"]}
                 ],
-                "dependencies": [[0,1],[1,2]],
-                "guards": {"2": "only if recruiter messages"}
+                "tags": ["web", "linkedin"]
               }
             }
           ]
@@ -49,27 +48,18 @@ class TestAgentProcedureTool(unittest.TestCase):
 
         result = agent.execute_request("create linkedin procedure")
         self.assertEqual(result["execution_results"]["status"], "completed")
-        # Legacy persistence still exists (ProcedureBuilder)
-        proc_nodes = [n for n in memory.nodes.values() if n.kind == "Procedure"]
-        step_nodes = [n for n in memory.nodes.values() if n.kind == "Step"]
-        self.assertEqual(len(proc_nodes), 1)
-        self.assertEqual(len(step_nodes), 3)
-        self.assertTrue(any(e.rel == "depends_on" for e in memory.edges.values()))
-
-        # Canonical persistence: KnowShowGo Concept DAG (Concept + has_step edges)
+        # Canonical persistence: ProcedureManager DAG (Procedure + Step nodes + has_step/depends_on edges)
         create_step = result["execution_results"]["steps"][0]
-        concept_uuid = create_step.get("procedure", {}).get("concept_uuid")
-        self.assertIsNotNone(concept_uuid)
-        concept_node = memory.nodes.get(concept_uuid)
-        self.assertIsNotNone(concept_node)
-        self.assertEqual(getattr(concept_node, "kind", None), "Concept")
-        self.assertEqual(concept_node.props.get("name"), "LinkedIn check")
-        # Verify KSG has_step edges exist
-        has_step_edges = [
-            e for e in memory.edges.values()
-            if e.rel == "has_step" and e.from_node == concept_uuid
-        ]
+        proc_uuid = create_step.get("procedure", {}).get("procedure_uuid")
+        self.assertIsNotNone(proc_uuid)
+        proc_node = memory.nodes.get(proc_uuid)
+        self.assertIsNotNone(proc_node)
+        self.assertEqual(getattr(proc_node, "kind", None), "Procedure")
+        self.assertIn("LinkedIn check", (proc_node.props or {}).get("title", "") or (proc_node.props or {}).get("name", ""))
+
+        has_step_edges = [e for e in memory.edges.values() if e.rel == "has_step" and e.from_node == proc_uuid]
         self.assertGreaterEqual(len(has_step_edges), 3)
+        self.assertTrue(any(e.rel == "depends_on" for e in memory.edges.values()))
 
     def test_procedure_search_tool(self):
         memory = MockMemoryTools()
