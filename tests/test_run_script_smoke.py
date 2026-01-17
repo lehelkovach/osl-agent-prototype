@@ -2,9 +2,11 @@ import subprocess
 import sys
 import os
 import unittest
+import pytest
 
 
 class TestRunScriptSmoke(unittest.TestCase):
+    @pytest.mark.skipif(sys.platform == "win32", reason="Bash scripts not available on Windows")
     def test_run_agent_ui_script_imports(self):
         script = os.path.join(os.path.dirname(__file__), "..", "scripts", "run_agent_ui.sh")
         env = os.environ.copy()

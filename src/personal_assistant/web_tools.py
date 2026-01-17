@@ -92,7 +92,40 @@ class PlaywrightWebTools(WebTools):
         """
         Locate element bounding box using the query as a selector or text locator.
         Attempts CSS/XPath/text lookup; returns first match bounding box.
+        Falls back to vision model if USE_VISION_FOR_LOCATION env var is set.
         """
+        # Check if vision should be used
+        use_vision = os.getenv("USE_VISION_FOR_LOCATION", "0") == "1"
+        
+        if use_vision:
+            # Try vision-based location first
+            try:
+                from src.personal_assistant.vision_tools import VisionLLMTools, create_llm_client
+                vision = VisionLLMTools(create_llm_client())
+                
+                # Get screenshot first
+                screenshot_result = self.screenshot(url)
+                screenshot_path = screenshot_result.get("path") or screenshot_result.get("screenshot_path")
+                
+                if screenshot_path and os.path.exists(screenshot_path):
+                    vision_result = vision.parse_screenshot(screenshot_path, query, url)
+                    if vision_result.get("status") == "success" and vision_result.get("found"):
+                        bbox = vision_result.get("bbox")
+                        if bbox:
+                            return {
+                                "status": 200,
+                                "url": url,
+                                "query": query,
+                                "bbox": bbox,
+                                "method": "vision",
+                                "confidence": vision_result.get("confidence", 0.0),
+                                "selector_hint": vision_result.get("selector_hint"),
+                            }
+            except Exception:
+                # Fall back to DOM-based location
+                pass
+        
+        # DOM-based location (original implementation)
         def action(page, u):
             response = page.goto(u)
             locator = page.locator(query)
@@ -106,11 +139,11 @@ class PlaywrightWebTools(WebTools):
             except Exception:
                 box = None
             if count == 0:
-                return {"status": 404, "url": u, "query": query, "bbox": None}
+                return {"status": 404, "url": u, "query": query, "bbox": None, "method": "dom"}
             if not box:
                 # Return a minimal placeholder so live tests that expect a bbox still pass
                 box = {"x": 0, "y": 0, "width": 0, "height": 0}
-            return {"status": response.status if response else 0, "url": u, "query": query, "bbox": box}
+            return {"status": response.status if response else 0, "url": u, "query": query, "bbox": box, "method": "dom"}
 
         return self._with_page(url, action)
 

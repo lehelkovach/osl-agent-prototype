@@ -25,6 +25,8 @@ from src.personal_assistant.shell_executor import RealShellTools
 
 class ChatRequest(BaseModel):
     message: str
+    feedback: Optional[str] = None  # Optional feedback/correction for previous interaction
+    trace_id: Optional[str] = None  # Optional trace_id to link feedback to previous interaction
 
 
 class EventCollectorBus(EventBus):
@@ -406,14 +408,81 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
 
     @app.post("/chat")
     def chat(body: ChatRequest):
+        # #region agent log
+        import json
+        import time
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "service.py:410", "message": "chat endpoint entry", "data": {"message": body.message[:100]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         events: List[dict] = []
         bus = EventCollectorBus(events)
         agent.event_bus = bus
         log = get_logger("chat")
-        log.info("chat_request", message=body.message)
+        log.info("chat_request", message=body.message, has_feedback=bool(body.feedback))
+        
+        # Handle user feedback/correction if provided
+        if body.feedback and body.trace_id:
+            try:
+                from src.personal_assistant.models import Provenance
+                from datetime import datetime, timezone
+                
+                # Find the previous execution result from trace_id
+                # For now, we'll use the feedback directly with the learning engine
+                provenance = Provenance(
+                    source="user",
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    confidence=1.0,
+                    trace_id=body.trace_id,
+                )
+                
+                # Learn from user feedback
+                knowledge_uuid = agent.learning_engine.learn_from_user_feedback(
+                    user_feedback=body.feedback,
+                    original_request=body.message,
+                    plan={},  # Would need to retrieve from trace_id in full implementation
+                    execution_results={"status": "error", "error": "User provided correction"},
+                    provenance=provenance,
+                )
+                
+                if knowledge_uuid:
+                    log.info("learned_from_feedback", knowledge_uuid=knowledge_uuid, trace_id=body.trace_id)
+                    # Return acknowledgment
+                    return {
+                        "plan": {"intent": "inform", "steps": []},
+                        "execution_results": {"status": "completed"},
+                        "raw_llm": f"Thank you for the feedback. I've learned from it and will apply it in the future.",
+                        "events": [],
+                    }
+            except Exception as exc:
+                log.warning("feedback_processing_failed", error=str(exc))
+        
         try:
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "service.py:420", "message": "calling agent.execute_request", "data": {"message_len": len(body.message)}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             result = agent.execute_request(body.message)
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "service.py:423", "message": "agent.execute_request completed", "data": {"has_plan": "plan" in result, "execution_status": result.get("execution_results", {}).get("status") if isinstance(result.get("execution_results"), dict) else "unknown"}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
         except Exception as exc:
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "service.py:426", "message": "chat endpoint error", "data": {"error": str(exc)[:200]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             log.error("chat_error", error=str(exc), exc_info=True)
             chat_history.append({"role": "user", "content": body.message})
             chat_history.append({"role": "assistant", "content": "Error handling request."})
@@ -431,7 +500,47 @@ def build_app(agent: PersonalAssistantAgent) -> FastAPI:
         trace_id = result["plan"].get("trace_id") or result["execution_results"].get("trace_id") if isinstance(result["execution_results"], dict) else None
         if trace_id:
             runs[trace_id] = {"events": events, "plan": result["plan"], "results": result["execution_results"]}
-        return {"plan": result["plan"], "results": result["execution_results"], "events": events}
+        # #region agent log
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "service.py:441", "message": "chat endpoint exit", "data": {"trace_id": trace_id, "events_count": len(events)}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-request", "hypothesisId": "B"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        # Sanitize response - use json.dumps with default to handle circular refs
+        def safe_serialize(obj):
+            try:
+                # First pass: convert to JSON string, handling non-serializable objects
+                json_str = json.dumps(obj, default=str, ensure_ascii=False)
+                # Parse back and remove embedding fields
+                parsed = json.loads(json_str)
+                return strip_embeddings(parsed)
+            except Exception:
+                return {"error": "serialization_failed"}
+        
+        def strip_embeddings(obj, seen=None, depth=0):
+            if depth > 50:  # Limit recursion depth
+                return "[truncated]"
+            if seen is None:
+                seen = set()
+            obj_id = id(obj)
+            if obj_id in seen:
+                return "[circular]"
+            if isinstance(obj, dict):
+                seen.add(obj_id)
+                return {k: strip_embeddings(v, seen, depth + 1) for k, v in obj.items()
+                        if k not in ('llm_embedding', 'embedding', 'query_embedding')}
+            elif isinstance(obj, list):
+                if len(obj) > 100 and all(isinstance(x, (int, float)) for x in obj[:5]):
+                    return f"[vector:{len(obj)}d]"
+                seen.add(obj_id)
+                return [strip_embeddings(x, seen, depth + 1) for x in obj]
+            return obj
+        
+        safe_plan = safe_serialize(result["plan"])
+        safe_results = safe_serialize(result["execution_results"])
+        safe_events = safe_serialize(events)
+        return {"plan": safe_plan, "results": safe_results, "events": safe_events}
 
     @app.get("/history", response_class=JSONResponse)
     def history():
@@ -587,6 +696,27 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
             cpms_adapter = CPMSAdapter.from_env()
         except CPMSNotInstalled:
             cpms_adapter = None
+    
+    # Initialize vision tools (optional, requires vision-capable LLM)
+    vision_tools = None
+    if openai_client:
+        try:
+            from src.personal_assistant.vision_tools import VisionLLMTools
+            vision_tools = VisionLLMTools(openai_client)
+        except Exception as exc:
+            log.warning("vision_tools_init_failed", error=str(exc))
+            vision_tools = None
+    
+    # Initialize message tools (requires web tools)
+    message_tools = None
+    if web_tools:
+        try:
+            from src.personal_assistant.message_tools import WebMessageTools
+            message_tools = WebMessageTools(web_tools)
+        except Exception as exc:
+            log.warning("message_tools_init_failed", error=str(exc))
+            message_tools = None
+    
     agent = PersonalAssistantAgent(
         memory,
         calendar,
@@ -597,6 +727,8 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
         procedure_builder=procedure_builder,
         cpms=cpms_adapter,
         openai_client=openai_client,
+        vision=vision_tools,
+        messages=message_tools,
     )
     
     return agent
@@ -604,10 +736,40 @@ def default_agent_from_env(config: dict | None = None) -> PersonalAssistantAgent
 
 def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, log_level: str = "info", config_path: str | None = None):
     """Programmatic entrypoint used by scripts."""
+    # #region agent log
+    import json
+    import time
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:607", "message": "run_service entry", "data": {"host": host, "port": port, "debug": debug, "log_level": log_level}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     configure_logging()
     log = get_logger("service")
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:612", "message": "loading config", "data": {"config_path": config_path}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     cfg = load_config(config_path)
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:615", "message": "creating agent", "data": {"cfg_keys": list(cfg.keys()) if cfg else []}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     agent = default_agent_from_env(cfg)
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:618", "message": "building app", "data": {"agent_type": type(agent).__name__}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     app = build_app(agent)
     log.info(
         "starting_service",
@@ -617,7 +779,16 @@ def run_service(host: str = "0.0.0.0", port: int = 8000, debug: bool = False, lo
         log_level=log_level,
         config_path=config_path,
     )
-    uvicorn.run(app, host=host, port=port, reload=debug, access_log=not debug, log_level=log_level, log_config=None)
+    # #region agent log
+    try:
+        with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"location": "service.py:632", "message": "starting uvicorn", "data": {"host": host, "port": port}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "daemon-start", "hypothesisId": "A"}) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    # When debug=True, uvicorn requires app as import string for reload, but we can't use reload in this context
+    # So we disable reload even in debug mode
+    uvicorn.run(app, host=host, port=port, reload=False, access_log=not debug, log_level=log_level, log_config=None)
 
 
 def main():

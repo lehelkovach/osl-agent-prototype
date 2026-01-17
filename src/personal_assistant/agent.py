@@ -14,11 +14,17 @@ from src.personal_assistant.task_queue import TaskQueueManager
 from src.personal_assistant.events import EventBus, NullEventBus
 from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
+from src.personal_assistant.procedure_manager import ProcedureManager
 from src.personal_assistant.knowshowgo import KnowShowGoAPI
 from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
 from src.personal_assistant.form_fingerprint import compute_form_fingerprint
 from src.personal_assistant.logging_setup import get_logger
+from src.personal_assistant.learning_engine import LearningEngine
+from src.personal_assistant.working_memory import WorkingMemoryGraph
+from src.personal_assistant.deterministic_parser import (
+    infer_concept_kind, quick_parse, is_obvious_intent, get_confidence_score
+)
 
 class PersonalAssistantAgent:
     """A personal assistant agent that follows a structured execution loop."""
@@ -38,6 +44,8 @@ class PersonalAssistantAgent:
         use_cpms_for_procs: Optional[bool] = None,
         use_cpms_for_forms: Optional[bool] = None,
         ksg: Optional[KnowShowGoAPI] = None,
+        vision: Optional[Any] = None,
+        messages: Optional[Any] = None,
     ):
         self.memory = memory
         self.calendar = calendar
@@ -47,6 +55,8 @@ class PersonalAssistantAgent:
         self.shell = shell
         self.cpms = cpms
         self.procedure_builder = procedure_builder
+        self.vision = vision
+        self.messages = messages
         self.system_prompt = SYSTEM_PROMPT
         self.developer_prompt = DEVELOPER_PROMPT
         # Support both old OpenAIClient and new LLMClient interface
@@ -56,13 +66,21 @@ class PersonalAssistantAgent:
             self.openai_client = OpenAIClient()
         else:
             self.openai_client = openai_client
-        self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text)
+        self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=self._embed_text)
+        self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text, ksg=self.ksg)
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
-        self.form_retriever = FormDataRetriever(memory)
-        self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=self._embed_text)
+        self.form_retriever = FormDataRetriever(memory, embed_fn=self._embed_text)
         self.dag_executor = DAGExecutor(memory, queue_manager=self.queue_manager)
         self.log = get_logger("agent")
+        # Enhanced learning engine for continual improvement
+        from src.personal_assistant.learning_engine import LearningEngine
+        self.learning_engine = LearningEngine(
+            memory=memory,
+            ksg=self.ksg,
+            llm_client=self.openai_client,
+            embed_fn=self._embed_text,
+        )
         # Flag to route procedure ops through CPMS if present
         if use_cpms_for_procs is None:
             self.use_cpms_for_procs = os.getenv("USE_CPMS_FOR_PROCS") == "1"
@@ -76,6 +94,17 @@ class PersonalAssistantAgent:
             self.use_cpms_for_forms = use_cpms_for_forms
         # Flag to enable ask-user fallback on empty plans (default off to preserve legacy flows)
         self.ask_user_enabled = os.getenv("ASK_USER_FALLBACK") == "1"
+        
+        # Working memory for session-scoped activation (Hebbian reinforcement)
+        reinforce_delta = float(os.getenv("WORKING_MEMORY_REINFORCE_DELTA", "1.0"))
+        max_weight = float(os.getenv("WORKING_MEMORY_MAX_WEIGHT", "100.0"))
+        self.working_memory = WorkingMemoryGraph(
+            reinforce_delta=reinforce_delta,
+            max_weight=max_weight
+        )
+        
+        # Flag to use deterministic parser for obvious intents (skip LLM)
+        self.skip_llm_for_obvious = os.getenv("SKIP_LLM_FOR_OBVIOUS_INTENTS") == "1"
 
     def execute_request(self, user_request: str) -> Dict[str, Any]:
         """
@@ -103,6 +132,10 @@ class PersonalAssistantAgent:
         memory_results = self.memory.search(
             user_request, top_k=top_k, query_embedding=query_embedding
         )
+        
+        # Apply working memory activation boost to results
+        memory_results = self._boost_by_activation(memory_results, query_uuid=provenance.trace_id)
+        
         self.log.info(
             "memory_retrieved",
             results=len(memory_results),
@@ -135,6 +168,20 @@ class PersonalAssistantAgent:
                 proc_matches.extend(self.procedure_builder.search_procedures(user_request, top_k=3))
             except Exception:
                 pass
+
+        # Also include ProcedureManager/graph-native Procedure nodes if present (newer path).
+        try:
+            proc_nodes = self.memory.search(
+                user_request,
+                top_k=3,
+                filters={"kind": "Procedure"},
+                query_embedding=query_embedding,
+            )
+            for r in proc_nodes:
+                rr = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+                proc_matches.append(rr)
+        except Exception:
+            pass
 
         if proc_matches:
             self._last_procedure_matches = proc_matches
@@ -281,12 +328,12 @@ class PersonalAssistantAgent:
                 error=str(exc),
                 trace_id=provenance.trace_id,
             )
-            plan = self._reuse_or_fallback(intent, user_request, proc_matches)
+            plan = self._reuse_or_fallback(intent, user_request, proc_matches, trace_id=provenance.trace_id)
             raw_llm = None
         if raw_llm:
             self._log_message("assistant", raw_llm, provenance)
         if plan.get("error") or not plan.get("steps"):
-            plan = self._reuse_or_fallback(intent, user_request, proc_matches)
+            plan = self._reuse_or_fallback(intent, user_request, proc_matches, trace_id=provenance.trace_id)
         if plan.get("fallback") or plan.get("reuse"):
             plan.setdefault("raw_llm", "Hello! I'm ready to help.")
 
@@ -340,12 +387,32 @@ class PersonalAssistantAgent:
             trace_id=provenance.trace_id,
         )
 
-        # 4. Execute via Tools
+        # 4. Execute via Tools with retry logic (1-3 attempts)
         execution_results = self._execute_plan(plan, provenance)
-        if execution_results.get("status") == "error":
-            # Single adaptation attempt: ask LLM to adjust based on the error context.
+        max_adaptation_attempts = int(os.getenv("MAX_ADAPTATION_ATTEMPTS", "3"))
+        adaptation_attempt = 0
+        
+        while execution_results.get("status") == "error" and adaptation_attempt < max_adaptation_attempts:
+            adaptation_attempt += 1
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:335", "message": "execution failed, attempting adaptation", "data": {"attempt": adaptation_attempt, "max_attempts": max_adaptation_attempts, "error": str(execution_results.get("error", ""))[:200], "trace_id": provenance.trace_id}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
+            # Adaptation attempt: ask LLM to adjust based on the error context.
             err = execution_results.get("error", "")
-            adapt_request = f"{user_request}\nPrevious plan failed with error: {err}. Adjust selectors/URLs/values and try again."
+            errors = execution_results.get("errors", [])
+            error_text = err or (errors[0] if errors else "Execution failed")
+            
+            adapt_request = (
+                f"{user_request}\n"
+                f"Previous plan failed (attempt {adaptation_attempt}/{max_adaptation_attempts}) with error: {error_text}. "
+                f"Adjust selectors/URLs/values and try again. If you're unsure, ask the user for guidance."
+            )
+            
             plan, raw_llm = self._generate_plan(
                 intent,
                 adapt_request,
@@ -356,7 +423,17 @@ class PersonalAssistantAgent:
                 proc_matches,
             )
             plan["adapted"] = True
+            plan["adaptation_attempt"] = adaptation_attempt
             plan["raw_llm"] = raw_llm or plan.get("raw_llm")
+            
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:360", "message": "adapted plan generated", "data": {"attempt": adaptation_attempt, "steps_count": len(plan.get("steps", [])), "has_procedure_create": any(s.get("tool") == "procedure.create" for s in plan.get("steps", []))}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "procedure-adapt", "hypothesisId": "F"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
+            
             self._emit(
                 "plan_ready",
                 {
@@ -364,10 +441,22 @@ class PersonalAssistantAgent:
                     "raw_llm": plan.get("raw_llm"),
                     "trace_id": provenance.trace_id,
                     "fallback": plan.get("fallback", False),
+                    "adaptation_attempt": adaptation_attempt,
                 },
             )
+            
             execution_results = self._execute_plan(plan, provenance)
-        # If execution still failed and we have no way forward, ask the user for guidance.
+            
+            # If adaptation succeeded, break out of retry loop
+            if execution_results.get("status") == "completed":
+                self.log.info(
+                    "adaptation_succeeded",
+                    attempt=adaptation_attempt,
+                    trace_id=provenance.trace_id,
+                )
+                break
+        
+        # If execution still failed after all retries, ask the user for guidance.
         if execution_results.get("status") == "error" and intent not in ("remember", "task", "schedule"):
             clarification = (
                 f"I hit an error while executing the plan: {execution_results.get('error', '')}. "
@@ -419,21 +508,61 @@ class PersonalAssistantAgent:
             # Persistence should not break the main loop
             pass
         
-        # Auto-generalize: If execution succeeded and multiple similar concepts were found,
-        # automatically merge them into a generalized pattern
-        if execution_results.get("status") == "completed" and self.ksg:
+        # Enhanced learning: Learn from success or failure
+        if execution_results.get("status") == "completed":
+            # Extract lessons from successful execution
             try:
-                self._auto_generalize_if_applicable(
-                    concept_matches=concept_matches,
+                knowledge_uuid = self.learning_engine.learn_from_success(
+                    user_request=user_request,
+                    plan=plan,
                     execution_results=execution_results,
-                    provenance=provenance
+                    provenance=provenance,
                 )
+                if knowledge_uuid:
+                    self.log.info(
+                        "learned_from_success",
+                        knowledge_uuid=knowledge_uuid,
+                        trace_id=provenance.trace_id,
+                    )
             except Exception as exc:
                 self.log.warning(
-                    "auto_generalize_error",
+                    "learning_from_success_failed",
                     error=str(exc),
                     trace_id=provenance.trace_id,
                 )
+            
+            # Auto-generalize: If execution succeeded and multiple similar concepts were found,
+            # automatically merge them into a generalized pattern
+            if self.ksg:
+                try:
+                    self._auto_generalize_if_applicable(
+                        concept_matches=concept_matches,
+                        execution_results=execution_results,
+                        provenance=provenance
+                    )
+                except Exception as exc:
+                    self.log.warning(
+                        "auto_generalize_error",
+                        error=str(exc),
+                        trace_id=provenance.trace_id,
+                    )
+        elif execution_results.get("status") == "error":
+            # Store failure analysis for future reference (non-blocking)
+            try:
+                failure_analysis = self.learning_engine.analyze_failure(
+                    user_request=user_request,
+                    plan=plan,
+                    execution_results=execution_results,
+                    similar_cases=None,
+                )
+                if failure_analysis.get("status") == "success":
+                    self.log.info(
+                        "analyzed_failure",
+                        trace_id=provenance.trace_id,
+                        root_cause=failure_analysis.get("analysis", {}).get("root_cause", "")[:100],
+                    )
+            except Exception:
+                pass  # Non-blocking
         
         self._emit(
             "execution_completed",
@@ -657,7 +786,7 @@ class PersonalAssistantAgent:
                             {
                                 "trace_id": provenance.trace_id,
                                 "task_uuid": task_node.uuid,
-                                "items": queue.props.get("items", []),
+                                "items": self.queue_manager.list_items(provenance),
                             },
                         )
                 elif tool_name == "calendar.create_event":
@@ -813,17 +942,17 @@ class PersonalAssistantAgent:
                         "queue_updated",
                         {
                             "trace_id": provenance.trace_id,
-                            "items": enqueue_res.props.get("items", []),
+                            "items": self.queue_manager.list_items(provenance),
                         },
                     )
                 elif tool_name == "queue.update":
                     queue = self.queue_manager.update_items(params.get("items", []), provenance)
-                    res = {"status": "success", "queue": queue.props.get("items", [])}
+                    res = {"status": "success", "queue": self.queue_manager.list_items(provenance)}
                     self._emit(
                         "queue_updated",
                         {
                             "trace_id": provenance.trace_id,
-                            "items": queue.props.get("items", []),
+                            "items": self.queue_manager.list_items(provenance),
                         },
                     )
                 elif tool_name == "memory.remember":
@@ -854,123 +983,58 @@ class PersonalAssistantAgent:
                     else:
                         res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
                 elif tool_name == "procedure.create":
-                    # Canonical persistence: always store a Procedure DAG into KnowShowGo (Concept + has_step edges).
-                    # Keep ProcedureBuilder/CPMS as optional secondary stores for backward compatibility.
-                    created_concept_uuid: Optional[str] = None
-                    try:
-                        proc_title = params.get("title") or params.get("name") or "Procedure"
-                        proc_desc = params.get("description") or ""
-                        proc_proto_uuid = self.ksg.ensure_prototype(
-                            name="Procedure",
-                            description="Prototype for procedures/recipes/step-by-step instructions",
-                            context="procedures and workflows",
-                            labels=["prototype", "procedure"],
-                            provenance=provenance,
-                        )
-                        step_proto_uuid = self.ksg.ensure_prototype(
-                            name="Step",
-                            description="Prototype for executable procedure steps (tool + params)",
-                            context="procedure steps and execution nodes",
-                            labels=["prototype", "step"],
-                            provenance=provenance,
-                        )
+                    # Check if params match the new JSON schema format (has "id" in steps)
+                    is_new_schema = (
+                        "steps" in params
+                        and isinstance(params.get("steps"), list)
+                        and len(params.get("steps") or []) > 0
+                        and isinstance((params.get("steps") or [None])[0], dict)
+                        and "id" in (params.get("steps") or [{}])[0]
+                    )
 
-                        raw_steps = params.get("steps") or []
-                        step_concepts: List[Dict[str, Any]] = []
-                        for idx, st in enumerate(raw_steps):
-                            if not isinstance(st, dict):
-                                continue
-                            tool = st.get("tool")
-                            step_concepts.append(
-                                {
-                                    "prototype_uuid": step_proto_uuid,
-                                    "name": st.get("title") or tool or f"step-{idx}",
-                                    "tool": tool,
-                                    "params": st.get("params", {}) if isinstance(st.get("params", {}), dict) else {},
-                                    "order": st.get("order", idx),
-                                    "guard": st.get("guard"),
-                                    "on_fail": st.get("on_fail"),
-                                }
+                    if is_new_schema:
+                        # Use ProcedureManager for new JSON schema format
+                        try:
+                            proc_manager = ProcedureManager(
+                                memory=self.memory,
+                                embed_fn=self._embed_text,
+                                ksg=self.ksg,
                             )
-
-                        dag_json = {
-                            "name": proc_title,
-                            "description": proc_desc,
-                            # Use "steps" so the DAG executor can still load from props,
-                            # and also so create_concept_recursive will create child concepts.
-                            "steps": step_concepts,
-                            "dependencies": params.get("dependencies") or [],
-                            "guards": params.get("guards") or {},
-                        }
-
-                        proc_emb = self._embed_text(f"{proc_title} {proc_desc}") or [0.0, 0.0]
-
-                        def _embed_list(text: str) -> List[float]:
-                            return self._embed_text(text) or [0.0, 0.0]
-
-                        created_concept_uuid = self.ksg.create_concept_recursive(
-                            prototype_uuid=proc_proto_uuid,
-                            json_obj=dag_json,
-                            embedding=proc_emb,
-                            provenance=provenance,
-                            embed_fn=_embed_list,
-                        )
-                    except Exception:
-                        created_concept_uuid = None
-
-                    # Optional: CPMS store
-                    cpms_proc = None
-                    if self.use_cpms_for_procs and self.cpms:
-                        try:
-                            cpms_proc = self.cpms.create_procedure(**params)
-                        except Exception:
-                            cpms_proc = None
-
-                    # Optional: ProcedureBuilder store (legacy)
-                    builder_proc = None
-                    if self.procedure_builder:
-                        try:
-                            norm_params = params.copy()
-                            # Normalize to ProcedureBuilder signature (title instead of name)
-                            if "name" in norm_params and "title" not in norm_params:
-                                norm_params["title"] = norm_params.pop("name")
-                            if "steps" in norm_params:
-                                norm_steps = []
-                                for idx, st in enumerate(norm_params.get("steps") or []):
-                                    if not isinstance(st, dict):
-                                        continue
-                                    norm_steps.append(
-                                        {
-                                            "title": st.get("title") or st.get("tool") or f"step-{idx}",
-                                            "tool": st.get("tool"),
-                                            "payload": {"tool": st.get("tool"), "params": st.get("params", {})},
-                                            "order": st.get("order", idx),
-                                        }
-                                    )
-                                norm_params["steps"] = norm_steps
-                            # Link the legacy Procedure node back to the KSG concept if available.
-                            extra_props = norm_params.get("extra_props") or {}
-                            if created_concept_uuid:
-                                extra_props = {**extra_props, "concept_uuid": created_concept_uuid}
-                            norm_params["extra_props"] = extra_props
-                            builder_proc = self.procedure_builder.create_procedure(**norm_params)
-                        except Exception:
-                            builder_proc = None
-
-                    if not (created_concept_uuid or builder_proc or cpms_proc):
-                        res = {"status": "error", "error": "Failed to create procedure"}
+                            procedure_result = proc_manager.create_from_json(params, provenance=provenance)
+                            res = {
+                                "status": "success",
+                                "procedure": procedure_result,
+                                "format": "json_dag",
+                            }
+                        except ValueError as ve:
+                            res = {"status": "error", "error": f"Invalid procedure JSON: {ve}"}
+                        except Exception as exc:
+                            res = {"status": "error", "error": str(exc)}
+                    elif self.use_cpms_for_procs and self.cpms:
+                        res = {"status": "success", "procedure": self.cpms.create_procedure(**params)}
+                    elif self.procedure_builder:
+                        norm_params = params.copy()
+                        # Normalize to ProcedureBuilder signature (title instead of name)
+                        if "name" in norm_params and "title" not in norm_params:
+                            norm_params["title"] = norm_params.pop("name")
+                        if "steps" in norm_params:
+                            norm_steps = []
+                            for idx, st in enumerate(norm_params.get("steps") or []):
+                                if not isinstance(st, dict):
+                                    continue
+                                norm_steps.append(
+                                    {
+                                        "title": st.get("title") or st.get("tool") or f"step-{idx}",
+                                        "tool": st.get("tool"),
+                                        "payload": {"tool": st.get("tool"), "params": st.get("params", {})},
+                                        "order": st.get("order", idx),
+                                    }
+                                )
+                            norm_params["steps"] = norm_steps
+                        procedure_result = self.procedure_builder.create_procedure(**norm_params)
+                        res = {"status": "success", "procedure": procedure_result, "format": "legacy"}
                     else:
-                        res = {
-                            "status": "success",
-                            "procedure": {
-                                **({"procedure_uuid": builder_proc.get("procedure_uuid")} if isinstance(builder_proc, dict) else {}),
-                                "concept_uuid": created_concept_uuid,
-                                # Keep CPMS response available, but also surface common fields
-                                # at the top-level for backward compatibility with older tests.
-                                **({"id": cpms_proc.get("id")} if isinstance(cpms_proc, dict) and cpms_proc.get("id") else {}),
-                                "cpms": cpms_proc,
-                            },
-                        }
+                        res = {"status": "error", "error": "ProcedureBuilder not configured"}
                 elif tool_name == "procedure.search":
                     if self.use_cpms_for_procs and self.cpms:
                         try:
@@ -1131,6 +1195,45 @@ class PersonalAssistantAgent:
                                     pass
                         except Exception as exc:
                             res = {"status": "error", "error": str(exc)}
+                elif tool_name == "vision.parse_screenshot" and self.vision:
+                    try:
+                        screenshot_path = params.get("screenshot_path") or params.get("screenshot")
+                        query = params.get("query") or params.get("element")
+                        url = params.get("url")
+                        res = self.vision.parse_screenshot(screenshot_path, query, url)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.detect_messages" and self.messages:
+                    try:
+                        url = params.get("url")
+                        filters = params.get("filters")
+                        res = self.messages.detect_messages(url, filters)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.get_details" and self.messages:
+                    try:
+                        url = params.get("url")
+                        message_id = params.get("message_id")
+                        selector = params.get("selector")
+                        res = self.messages.get_message_details(url, message_id, selector)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.compose_response" and self.messages:
+                    try:
+                        message = params.get("message")
+                        template = params.get("template")
+                        custom_text = params.get("custom_text")
+                        res = self.messages.compose_response(message, template, custom_text)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
+                elif tool_name == "message.send_response" and self.messages:
+                    try:
+                        url = params.get("url")
+                        response = params.get("response")
+                        message = params.get("message")
+                        res = self.messages.send_response(url, response, message)
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
                 elif tool_name == "dag.execute":
                     try:
                         concept_uuid = params.get("concept_uuid")
@@ -1192,6 +1295,16 @@ class PersonalAssistantAgent:
                         res = {"status": "error", "error": str(exc)}
                 elif tool_name == "form.autofill":
                     res = self._autofill_form(params)
+                elif tool_name == "billing.submit_and_verify":
+                    res = self._billing_submit_and_verify(params, provenance)
+                elif tool_name == "billing.prompt_for_data":
+                    res = self._billing_prompt_for_data(params)
+                elif tool_name == "survey.fill_and_submit":
+                    res = self._survey_fill_and_submit(params, provenance)
+                elif tool_name == "survey.store_response":
+                    res = self._survey_store_response(params, provenance)
+                elif tool_name == "survey.prompt_for_missing":
+                    res = self._survey_prompt_for_missing(params)
                 else:
                     res = {"status": "no action taken", "tool": tool_name}
             except Exception as exc:
@@ -1203,13 +1316,18 @@ class PersonalAssistantAgent:
                     "trace_id": provenance.trace_id,
                 }
             results.append(res)
+            # Safely log result (avoid circular references)
+            try:
+                safe_result = json.loads(json.dumps(res, default=str))
+            except (TypeError, ValueError):
+                safe_result = {"status": res.get("status") if isinstance(res, dict) else "unknown"}
             self.log.debug(
                 "tool_result",
                 module="agent",
                 function="_execute_plan",
                 tool=tool_name,
                 params=params,
-                result=res,
+                result=safe_result,
                 trace_id=provenance.trace_id,
                 ts=datetime.now(timezone.utc).isoformat(),
             )
@@ -1416,13 +1534,439 @@ class PersonalAssistantAgent:
             res = self.web.fill(url=url, selector=selector, text=str(val))
             filled.append({"field": field, "value": val, "selector": selector, "result": res})
 
+        # PATTERN EVOLUTION: If missing fields, try to transfer from similar patterns
+        transferred_from = None
+        if missing and self.ksg:
+            try:
+                similar = self.ksg.find_similar_patterns(
+                    query=f"{url} {form_type or 'form'}",
+                    top_k=3,
+                    min_similarity=0.5,
+                )
+                for sim in similar:
+                    if not sim.get("selectors") and not sim.get("pattern_data"):
+                        continue
+                    # Try to transfer the pattern
+                    transfer_result = self.ksg.transfer_pattern(
+                        source_pattern_uuid=sim["uuid"],
+                        target_context={
+                            "url": url,
+                            "fields": missing,
+                            "form_type": form_type,
+                        },
+                        llm_fn=self._llm_for_transfer,
+                    )
+                    if transfer_result.get("transferred_pattern"):
+                        transferred = transfer_result["transferred_pattern"]
+                        transferred_selectors = transferred.get("selectors", {})
+                        # Try to fill using transferred selectors
+                        for field in list(missing):
+                            if field in transferred_selectors:
+                                sel = transferred_selectors[field]
+                                candidates = synonym_keys.get(field, [field])
+                                val = None
+                                for k in candidates:
+                                    if k in values_by_key:
+                                        val = values_by_key[k]
+                                        break
+                                if val:
+                                    res = self.web.fill(url=url, selector=sel, text=str(val))
+                                    filled.append({"field": field, "value": val, "selector": sel, "result": res, "transferred": True})
+                                    missing.remove(field)
+                        transferred_from = sim["uuid"]
+                        break  # Use first successful transfer
+            except Exception as e:
+                self.log.debug("pattern_transfer_failed", error=str(e))
+
+        # PATTERN EVOLUTION: Record success and try auto-generalization
+        all_success = len(filled) > 0 and len(missing) == 0
+        generalized_uuid = None
+        if all_success and pattern_uuid and self.ksg:
+            try:
+                self.ksg.record_pattern_success(
+                    pattern_uuid=pattern_uuid,
+                    context={"url": url, "fields_filled": len(filled)},
+                )
+                # Try auto-generalization
+                gen_result = self.ksg.auto_generalize(
+                    pattern_uuid=pattern_uuid,
+                    min_similar=2,
+                    min_similarity=0.7,
+                    llm_fn=self._llm_for_transfer,
+                )
+                if gen_result:
+                    generalized_uuid = gen_result.get("generalized_uuid")
+                    self.log.info("auto_generalized", generalized_uuid=generalized_uuid, exemplar_count=gen_result.get("exemplar_count"))
+            except Exception as e:
+                self.log.debug("pattern_success_tracking_failed", error=str(e))
+
         return {
             "status": "success",
             "filled": filled,
             "missing_fields": sorted(set(missing)),
             "pattern_uuid": pattern_uuid,
             "reused": reused,
+            "transferred_from": transferred_from,
+            "generalized_uuid": generalized_uuid,
         }
+
+    def _billing_submit_and_verify(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Submit a billing form and verify the payment result.
+        
+        params:
+          - url: str - The checkout page URL
+          - submit_selector: str - CSS selector for submit button (optional, auto-detect)
+          - wait_ms: int - Time to wait after clicking (default 2000)
+          
+        Returns:
+            - status: "success" | "failed" | "ask_user"
+            - payment_status: "success" | "failed" | "unknown"
+            - message: Description of the result
+            - prompt: If failed, prompt for new billing data
+        """
+        if not self.web:
+            return {"status": "error", "error": "WebTools not configured"}
+        
+        url = params.get("url")
+        if not url:
+            return {"status": "error", "error": "url required"}
+        
+        submit_selector = params.get("submit_selector")
+        wait_ms = params.get("wait_ms", 2000)
+        
+        # If no submit selector provided, try common patterns
+        if not submit_selector:
+            submit_selectors = [
+                'button[type="submit"]',
+                'input[type="submit"]',
+                '#submit-btn',
+                '.submit-button',
+                'button:contains("Pay")',
+                'button:contains("Submit")',
+                'button:contains("Complete")',
+            ]
+            for sel in submit_selectors:
+                try:
+                    # Try to click the selector
+                    click_result = self.web.click_selector(url=url, selector=sel)
+                    if click_result.get("status") == "success" or click_result.get("clicked"):
+                        submit_selector = sel
+                        break
+                except Exception:
+                    continue
+        else:
+            # Click the provided selector
+            self.web.click_selector(url=url, selector=submit_selector)
+        
+        # Wait for the page to process
+        import time
+        time.sleep(wait_ms / 1000.0)
+        
+        # Get the updated page content
+        dom_result = self.web.get_dom(url)
+        page_text = dom_result.get("text", "") or dom_result.get("body", "")
+        page_html = dom_result.get("html", "")
+        
+        # Detect payment result
+        payment_result = self.form_retriever.detect_payment_result(
+            page_text=page_text,
+            page_html=page_html
+        )
+        
+        result = {
+            "status": "success",
+            "payment_status": payment_result["status"],
+            "message": payment_result["message"],
+            "confidence": payment_result["confidence"],
+        }
+        
+        # If payment failed, add prompt for user
+        if payment_result["status"] == "failed":
+            result["status"] = "ask_user"
+            result["prompt"] = self.form_retriever.build_payment_prompt(
+                failure_reason=payment_result["reason"]
+            )
+            result["failure_reason"] = payment_result["reason"]
+            
+            # Log the failed attempt
+            self.log.info(
+                "billing_payment_failed",
+                url=url,
+                reason=payment_result["reason"],
+                trace_id=provenance.trace_id,
+            )
+        elif payment_result["status"] == "success":
+            self.log.info(
+                "billing_payment_success",
+                url=url,
+                trace_id=provenance.trace_id,
+            )
+        
+        # Take a screenshot of the result
+        try:
+            screenshot = self.web.screenshot(url=url)
+            result["screenshot"] = screenshot.get("path") or screenshot.get("screenshot_path")
+        except Exception:
+            pass
+        
+        return result
+    
+    def _billing_prompt_for_data(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate a prompt asking the user for billing/payment information.
+        
+        params:
+          - failure_reason: str - Why the previous attempt failed (optional)
+          - missing_fields: list - Fields that need to be provided (optional)
+          
+        Returns:
+            - status: "ask_user"
+            - prompt: The prompt text to show the user
+        """
+        failure_reason = params.get("failure_reason")
+        missing_fields = params.get("missing_fields", [])
+        
+        if failure_reason:
+            prompt = self.form_retriever.build_payment_prompt(failure_reason=failure_reason)
+        elif missing_fields:
+            prompt = f"Please provide the following billing information:\n"
+            for field in missing_fields:
+                prompt += f"- {field.replace('_', ' ').title()}: \n"
+        else:
+            prompt = self.form_retriever.build_payment_prompt()
+        
+        return {
+            "status": "ask_user",
+            "prompt": prompt,
+            "required_fields": missing_fields or [
+                "card_number", "expiry", "cvv", "card_name",
+                "billing_address", "city", "state", "zip", "country"
+            ]
+        }
+
+    def _survey_fill_and_submit(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Fill a survey form using stored answers and prompt for missing fields.
+        
+        params:
+          - url: str - The survey page URL
+          - form_fields: list - Optional list of {field_name, label, required, selector}
+          - submit_selector: str - CSS selector for submit button (optional)
+          
+        Returns:
+            - status: "success" | "ask_user" | "error"
+            - filled: List of filled fields
+            - missing: List of fields needing user input
+            - prompt: If missing fields, prompt text for user
+        """
+        if not self.web:
+            return {"status": "error", "error": "WebTools not configured"}
+        
+        url = params.get("url")
+        if not url:
+            return {"status": "error", "error": "url required"}
+        
+        # Get form fields if not provided
+        form_fields = params.get("form_fields", [])
+        
+        # Get page DOM to detect form fields
+        dom_result = self.web.get_dom(url)
+        html = dom_result.get("html", "") or dom_result.get("body", "")
+        
+        # If no form fields provided, try to detect them from DOM
+        if not form_fields and html:
+            form_fields = self._detect_form_fields(html)
+        
+        # Build autofill data from stored surveys
+        autofill_result = self.form_retriever.build_survey_autofill(
+            form_fields=form_fields,
+            query="survey personal info contact",
+            top_k=20
+        )
+        
+        autofill = autofill_result.get("autofill", {})
+        missing = autofill_result.get("missing", [])
+        missing_labels = autofill_result.get("missing_labels", {})
+        
+        # If we have missing required fields, ask user
+        if missing:
+            prompt = self.form_retriever.build_survey_prompt(missing, missing_labels)
+            return {
+                "status": "ask_user",
+                "filled": list(autofill.keys()),
+                "autofill": autofill,
+                "missing": missing,
+                "missing_labels": missing_labels,
+                "prompt": prompt,
+                "message": f"Need {len(missing)} more fields to complete the survey"
+            }
+        
+        # Fill the form fields
+        filled = []
+        for field_name, value in autofill.items():
+            # Find selector for this field
+            selector = None
+            for f in form_fields:
+                if f.get("field_name") == field_name:
+                    selector = f.get("selector")
+                    break
+            
+            if not selector:
+                # Try common selector patterns
+                selector = f'#{field_name}, [name="{field_name}"], [id="{field_name}"]'
+            
+            try:
+                res = self.web.fill(url=url, selector=selector, text=str(value))
+                filled.append({
+                    "field": field_name,
+                    "value": value,
+                    "selector": selector,
+                    "result": res
+                })
+            except Exception as e:
+                self.log.warning("survey_fill_error", field=field_name, error=str(e))
+        
+        # Click submit if selector provided
+        submit_selector = params.get("submit_selector")
+        if submit_selector:
+            try:
+                self.web.click_selector(url=url, selector=submit_selector)
+            except Exception:
+                pass
+        
+        # Store the response for future reuse
+        questions_and_answers = [
+            {"field_name": f["field"], "answer": f["value"]}
+            for f in filled
+        ]
+        self.form_retriever.store_survey_response(
+            form_url=url,
+            questions_and_answers=questions_and_answers,
+            form_title=params.get("form_title")
+        )
+        
+        return {
+            "status": "success",
+            "filled": filled,
+            "missing": [],
+            "stored": True,
+            "message": f"Filled {len(filled)} fields successfully"
+        }
+    
+    def _survey_store_response(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Store a user's survey answers for future reuse.
+        
+        params:
+          - url: str - Form URL
+          - answers: dict - {field_name: answer} mapping
+          - form_title: str - Optional title
+          
+        Returns:
+            - status: "success" | "error"
+            - uuid: UUID of stored response
+        """
+        url = params.get("url", "")
+        answers = params.get("answers", {})
+        form_title = params.get("form_title")
+        
+        if not answers:
+            return {"status": "error", "error": "No answers provided"}
+        
+        # Convert to questions_and_answers format
+        qa_list = [
+            {"field_name": field, "answer": value}
+            for field, value in answers.items()
+            if value is not None
+        ]
+        
+        uuid = self.form_retriever.store_survey_response(
+            form_url=url,
+            questions_and_answers=qa_list,
+            form_title=form_title
+        )
+        
+        if uuid:
+            self.log.info(
+                "survey_response_stored",
+                uuid=uuid,
+                fields=len(qa_list),
+                trace_id=provenance.trace_id
+            )
+            return {"status": "success", "uuid": uuid, "stored_fields": len(qa_list)}
+        else:
+            return {"status": "error", "error": "Failed to store survey response"}
+    
+    def _survey_prompt_for_missing(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Generate a prompt for missing survey fields.
+        
+        params:
+          - missing_fields: list - Field names that need values
+          - field_labels: dict - Optional {field: label} mapping
+          
+        Returns:
+            - status: "ask_user"
+            - prompt: Prompt text for user
+        """
+        missing = params.get("missing_fields", [])
+        labels = params.get("field_labels", {})
+        
+        if not missing:
+            return {"status": "success", "message": "No missing fields"}
+        
+        prompt = self.form_retriever.build_survey_prompt(missing, labels)
+        
+        return {
+            "status": "ask_user",
+            "prompt": prompt,
+            "missing_fields": missing
+        }
+    
+    def _detect_form_fields(self, html: str) -> List[Dict[str, Any]]:
+        """
+        Detect form fields from HTML content.
+        
+        Args:
+            html: Page HTML
+            
+        Returns:
+            List of {field_name, label, required, selector} dicts
+        """
+        import re
+        
+        fields = []
+        
+        # Find input, select, and textarea elements
+        input_pattern = r'<(input|select|textarea)[^>]*(?:name=["\']([^"\']+)["\']|id=["\']([^"\']+)["\'])[^>]*>'
+        
+        for match in re.finditer(input_pattern, html, re.IGNORECASE):
+            tag_type = match.group(1).lower()
+            name = match.group(2) or match.group(3)
+            
+            if not name or name in ('submit', 'button', 'csrf', 'token'):
+                continue
+            
+            # Check if required
+            required = 'required' in match.group(0).lower()
+            
+            # Determine input type
+            type_match = re.search(r'type=["\']([^"\']+)["\']', match.group(0), re.IGNORECASE)
+            input_type = type_match.group(1) if type_match else 'text'
+            
+            if input_type in ('hidden', 'submit', 'button'):
+                continue
+            
+            fields.append({
+                "field_name": name,
+                "label": name.replace("_", " ").replace("-", " ").title(),
+                "required": required,
+                "selector": f'#{name}, [name="{name}"]',
+                "type": input_type if tag_type == 'input' else tag_type
+            })
+        
+        return fields
 
     def _record_form_element(self, params: Dict[str, Any], provenance: Provenance, action: str) -> None:
         """
@@ -1460,6 +2004,137 @@ class PersonalAssistantAgent:
             return self.openai_client.embed(text)
         except Exception:
             return None
+
+    def _llm_for_transfer(self, prompt: str) -> str:
+        """
+        LLM helper for pattern transfer operations.
+        
+        Wraps the OpenAI client for use in KnowShowGo pattern evolution.
+        Used for field mapping and generalization naming.
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            
+        Returns:
+            LLM response text (expects JSON)
+        """
+        try:
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that responds only with valid JSON."},
+                {"role": "user", "content": prompt},
+            ]
+            response = self.openai_client.chat(
+                messages=messages,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            return response.get("content", "")
+        except Exception as e:
+            self.log.debug("llm_for_transfer_failed", error=str(e))
+            return "{}"
+
+    # -------------------------------------------------------------------------
+    # Working Memory Integration (Salvage Step D)
+    # -------------------------------------------------------------------------
+    
+    def _boost_by_activation(self, results: List[Dict[str, Any]], query_uuid: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Boost search results by working memory activation.
+        
+        Adds an '_activation_boost' field to each result and optionally
+        adjusts the score. Results are re-sorted by combined score.
+        
+        Args:
+            results: List of search results (dicts with 'uuid' and optionally 'score')
+            query_uuid: Optional query context UUID for linking
+            
+        Returns:
+            Results with activation boost applied and re-sorted
+        """
+        if not results:
+            return results
+        
+        activation_weight = 0.1  # Tunable: how much activation affects ranking
+        
+        for result in results:
+            uuid = result.get("uuid")
+            boost = 0.0
+            if uuid:
+                boost = self.working_memory.get_activation_boost(uuid, default=0.0)
+            result["_activation_boost"] = boost
+            # Combine with existing score if present
+            if "score" in result:
+                result["_boosted_score"] = result["score"] + (boost * activation_weight)
+            else:
+                result["_boosted_score"] = boost * activation_weight
+        
+        # Re-sort by boosted score (higher first)
+        return sorted(results, key=lambda r: r.get("_boosted_score", 0), reverse=True)
+    
+    def _reinforce_selection(self, query_uuid: str, selected_uuid: str, seed_weight: float = 1.0) -> None:
+        """
+        Reinforce working memory when a concept/procedure is selected.
+        
+        Creates or strengthens the link between query context and selected item.
+        Implements Hebbian learning: "neurons that fire together wire together".
+        
+        Args:
+            query_uuid: The query/context UUID
+            selected_uuid: The selected concept/procedure UUID
+            seed_weight: Initial weight for new links (default 1.0)
+        """
+        self.working_memory.link(query_uuid, selected_uuid, seed_weight=seed_weight)
+        self.log.debug(
+            "working_memory_reinforced",
+            query_uuid=query_uuid,
+            selected_uuid=selected_uuid,
+            new_weight=self.working_memory.get_weight(query_uuid, selected_uuid)
+        )
+    
+    def _classify_intent_with_fallback(self, user_request: str) -> str:
+        """
+        Classify intent using deterministic parser first, then LLM for ambiguous cases.
+        
+        When SKIP_LLM_FOR_OBVIOUS_INTENTS=1, uses rule-based classification for
+        obvious intents (events with time, questions, clear action verbs) to
+        reduce API costs and improve response time.
+        
+        Args:
+            user_request: The user's request text
+            
+        Returns:
+            Intent string: "task", "event", "query", "procedure", or "inform"
+        """
+        # Try deterministic classification first
+        kind = infer_concept_kind(user_request)
+        
+        # Check if it's obvious enough to skip LLM
+        if self.skip_llm_for_obvious and is_obvious_intent(user_request, kind):
+            confidence = get_confidence_score(user_request, kind)
+            self.log.debug(
+                "deterministic_intent_classification",
+                kind=kind,
+                confidence=confidence,
+                skipped_llm=True
+            )
+            return kind
+        
+        # Fall back to LLM for complex/ambiguous cases
+        return self._classify_intent(user_request)
+    
+    def _get_activated_concepts(self, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Get top activated concepts from working memory for context.
+        
+        Useful for providing recent context to the LLM planner.
+        
+        Args:
+            top_k: Number of top activated concepts to return
+            
+        Returns:
+            List of (uuid, activation) tuples for most activated concepts
+        """
+        return self.working_memory.get_top_activated(top_k=top_k)
 
     def _load_procedure_steps(self, proc: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -2027,7 +2702,7 @@ class PersonalAssistantAgent:
             url = f"https://{url}"
         return url
 
-    def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list) -> Dict[str, Any]:
+    def _reuse_or_fallback(self, intent: str, user_request: str, proc_matches: list, trace_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Prefer reuse of a retrieved procedure if available; else fallback.
         """
@@ -2035,6 +2710,12 @@ class PersonalAssistantAgent:
             proc = proc_matches[0]
             proc_kind = proc.get("kind") if isinstance(proc, dict) else None
             proc_props = proc.get("props", {}) if isinstance(proc, dict) else {}
+            proc_uuid = proc.get("uuid")
+            
+            # Reinforce working memory when we select a procedure for reuse
+            if proc_uuid and trace_id:
+                self._reinforce_selection(trace_id, proc_uuid, seed_weight=2.0)
+
             # Prefer KSG Procedure concepts when available.
             if proc_kind == "Concept" and proc.get("uuid"):
                 steps = self._load_ksg_procedure_steps(proc["uuid"])
@@ -2196,6 +2877,15 @@ class PersonalAssistantAgent:
 
     def _log_message(self, role: str, content: str, provenance: Provenance) -> None:
         """Persist conversation messages with embeddings into history."""
+        # #region agent log
+        import json
+        import time
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:1794", "message": "_log_message entry", "data": {"role": role, "content_len": len(content) if content else 0, "trace_id": provenance.trace_id}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         if not content:
             return
         msg_node = Node(
@@ -2203,14 +2893,42 @@ class PersonalAssistantAgent:
             labels=["history", role],
             props={"role": role, "content": content, "ts": provenance.ts},
         )
+        # #region agent log
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:1801", "message": "generating embedding for message", "data": {"node_uuid": msg_node.uuid, "kind": msg_node.kind, "labels": msg_node.labels}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         msg_node.llm_embedding = self._embed_text(content)
+        # #region agent log
+        try:
+            with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"location": "agent.py:1804", "message": "embedding generated, upserting to memory", "data": {"embedding_len": len(msg_node.llm_embedding) if msg_node.llm_embedding else 0}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+        except Exception:
+            pass
+        # #endregion
         try:
             self.memory.upsert(msg_node, provenance, embedding_request=True)
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:1807", "message": "message upserted to memory successfully", "data": {"node_uuid": msg_node.uuid, "memory_backend": type(self.memory).__name__}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             self._emit(
                 "message_logged",
                 {"role": role, "content": content, "trace_id": provenance.trace_id, "ts": provenance.ts},
             )
-        except Exception:
+        except Exception as e:
+            # #region agent log
+            try:
+                with open(r"c:\Users\lehel\OneDrive\development\source\osl-agent-prototype\.cursor\debug.log", "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"location": "agent.py:1814", "message": "message upsert failed", "data": {"error": str(e)[:200]}, "timestamp": int(time.time() * 1000), "sessionId": "debug-session", "runId": "chat-history", "hypothesisId": "C"}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             # Do not fail the agent loop on logging errors
             pass
 

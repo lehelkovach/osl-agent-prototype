@@ -19,24 +19,29 @@ class TestKSGSeed(unittest.TestCase):
         self.assertEqual(len(ensured["objects"]), len(DEFAULT_OBJECTS))
 
         # Verify some nodes exist
-        proto_nodes = [n for n in memory.nodes.values() if n.kind == "Prototype"]
+        # Prototypes are now Topics with isPrototype=true (Knowshowgo design)
+        proto_nodes = [
+            n for n in memory.nodes.values()
+            if n.kind == "topic" and n.props.get("isPrototype") is True
+        ]
         self.assertEqual(len(proto_nodes), len(DEFAULT_PROTOTYPES))
         prop_nodes = [n for n in memory.nodes.values() if n.kind == "PropertyDef"]
         self.assertEqual(len(prop_nodes), len(DEFAULT_PROPERTY_DEFS))
         obj_nodes = [n for n in memory.nodes.values() if n.kind == "Object"]
         self.assertEqual(len(obj_nodes), len(DEFAULT_OBJECTS))
 
-        # Check inheritance edges for list/dag
-        inherit_edges = [e for e in memory.edges.values() if e.rel == "inherits_from"]
+        # Check inheritance edges (Knowshowgo uses "inherits" edge collection)
+        inherit_edges = [e for e in memory.edges.values() if e.rel == "inherits"]
         self.assertGreaterEqual(len(inherit_edges), 1)
         rels = {(e.props.get("child"), e.props.get("parent")) for e in inherit_edges}
-        self.assertIn(("DAG", "List"), rels)
-        self.assertIn(("Queue", "List"), rels)
-        self.assertIn(("Procedure", "DAG"), rels)
-        self.assertIn(("Credential", "Vault"), rels)
-        self.assertIn(("PaymentMethod", "Vault"), rels)
-        self.assertIn(("Identity", "Vault"), rels)
-        self.assertIn(("FormData", "Vault"), rels)
+        # Check for BasePrototype inheritance (all prototypes inherit from BasePrototype)
+        self.assertIn(("Person", "BasePrototype"), rels)
+        self.assertIn(("Procedure", "BasePrototype"), rels)
+        # Backward compat inheritance
+        if "DAG" in DEFAULT_PROTOTYPES and "List" in DEFAULT_PROTOTYPES:
+            self.assertIn(("DAG", "List"), rels)
+        if "Queue" in DEFAULT_PROTOTYPES and "List" in DEFAULT_PROTOTYPES:
+            self.assertIn(("Queue", "List"), rels)
 
     def test_vault_property_defs_present(self):
         memory = MockMemoryTools()

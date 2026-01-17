@@ -5,76 +5,121 @@ from src.personal_assistant.models import Node, Edge, Provenance
 from src.personal_assistant.tools import MemoryTools
 
 
+# Knowshowgo v0.1 PropertyDef catalog (minimal set for agent functionality)
+# Aligned with Knowshowgo_SYSTEM_DESIGN_v0.1.md
 DEFAULT_PROPERTY_DEFS = [
-    {"prop": "name", "dtype": "text"},
-    {"prop": "description", "dtype": "text"},
-    {"prop": "tags", "dtype": "list[ref(Tag)]"},
-    {"prop": "createdAt", "dtype": "date"},
-    {"prop": "updatedAt", "dtype": "date"},
-    {"prop": "startAt", "dtype": "date"},
-    {"prop": "endAt", "dtype": "date"},
-    {"prop": "dueAt", "dtype": "date"},
-    {"prop": "status", "dtype": "text"},
-    {"prop": "priority", "dtype": "int"},
-    {"prop": "owner", "dtype": "ref(Agent)"},
-    {"prop": "participants", "dtype": "list[ref(Agent)]"},
-    {"prop": "location", "dtype": "ref(Place)"},
-    {"prop": "url", "dtype": "url"},
-    {"prop": "sender", "dtype": "ref(Agent)"},
-    {"prop": "recipient", "dtype": "list[ref(Agent)]"},
-    {"prop": "username", "dtype": "text"},
-    {"prop": "password", "dtype": "text"},
-    {"prop": "secret", "dtype": "text"},
-    {"prop": "appName", "dtype": "text"},
-    {"prop": "cardNumber", "dtype": "text"},
-    {"prop": "cardExpiry", "dtype": "text"},
-    {"prop": "cardCvv", "dtype": "text"},
-    {"prop": "billingAddress", "dtype": "text"},
-    {"prop": "identityNumber", "dtype": "text"},
-    {"prop": "givenName", "dtype": "text"},
-    {"prop": "familyName", "dtype": "text"},
-    {"prop": "address", "dtype": "text"},
-    {"prop": "city", "dtype": "text"},
-    {"prop": "state", "dtype": "text"},
-    {"prop": "postalCode", "dtype": "text"},
-    {"prop": "country", "dtype": "text"},
-    {"prop": "phone", "dtype": "text"},
+    # Ontology core
+    {"prop": "instanceOf", "dtype": "topic_ref", "description": "Topic → Prototype (type membership)"},
+    {"prop": "broaderThan", "dtype": "topic_ref", "description": "Broader concept relationship"},
+    {"prop": "narrowerThan", "dtype": "topic_ref", "description": "Narrower concept relationship"},
+    {"prop": "relatedTo", "dtype": "topic_ref", "description": "General relatedness"},
+    {"prop": "partOf", "dtype": "topic_ref", "description": "Part-whole relationship"},
+    {"prop": "hasPart", "dtype": "topic_ref", "description": "Has-part relationship"},
+    {"prop": "synonymOf", "dtype": "topic_ref", "description": "Soft equivalence"},
+    {"prop": "sameAs", "dtype": "topic_ref", "description": "Strong equivalence/merge"},
+    {"prop": "hasSource", "dtype": "topic_ref", "description": "Source reference (DigitalResource or URL)"},
+    # Identity & external refs
+    {"prop": "alias", "dtype": "string", "description": "Alternative name/label"},
+    {"prop": "externalUrl", "dtype": "url", "description": "External URL reference"},
+    {"prop": "imageUrl", "dtype": "url", "description": "Image URL"},
+    {"prop": "schemaOrgType", "dtype": "url", "description": "Schema.org type reference"},
+    {"prop": "wikipediaUrl", "dtype": "url", "description": "Wikipedia URL"},
+    # Time + scheduling (assistant)
+    {"prop": "startTime", "dtype": "date", "description": "Start time/datetime"},
+    {"prop": "endTime", "dtype": "date", "description": "End time/datetime"},
+    {"prop": "dueTime", "dtype": "date", "description": "Due time/datetime"},
+    {"prop": "priority", "dtype": "number", "description": "Priority level"},
+    {"prop": "status", "dtype": "string", "description": "Status (todo|doing|done|blocked|active|deprecated)"},
+    # Procedural memory (assistant)
+    {"prop": "hasStep", "dtype": "topic_ref", "description": "Procedure → Step"},
+    {"prop": "nextStep", "dtype": "topic_ref", "description": "Step → Step (sequence)"},
+    {"prop": "usesCommandlet", "dtype": "topic_ref", "description": "Step → Commandlet"},
+    {"prop": "params", "dtype": "json", "description": "Parameters (JSON)"},
+    {"prop": "trigger", "dtype": "topic_ref", "description": "Procedure → Trigger"},
+    {"prop": "successCriteria", "dtype": "json", "description": "Success criteria (JSON/string)"},
+    {"prop": "appliesToSite", "dtype": "topic_ref", "description": "Procedure → WebResource"},
+    {"prop": "runsProcedure", "dtype": "topic_ref", "description": "QueueItem → Procedure"},
+    {"prop": "context", "dtype": "json", "description": "Context data (JSON)"},
+    # Additional assistant properties (backward compat)
+    {"prop": "name", "dtype": "string", "description": "Name/label"},
+    {"prop": "description", "dtype": "string", "description": "Description/summary"},
+    {"prop": "createdAt", "dtype": "date", "description": "Creation timestamp"},
+    {"prop": "updatedAt", "dtype": "date", "description": "Update timestamp"},
+    {"prop": "givenName", "dtype": "string", "description": "Given name (Person)"},
+    {"prop": "familyName", "dtype": "string", "description": "Family name (Person)"},
+    {"prop": "email", "dtype": "string", "description": "Email address"},
+    {"prop": "phone", "dtype": "string", "description": "Phone number"},
+    {"prop": "address", "dtype": "string", "description": "Address"},
+    {"prop": "city", "dtype": "string", "description": "City"},
+    {"prop": "state", "dtype": "string", "description": "State/province"},
+    {"prop": "postalCode", "dtype": "string", "description": "Postal/ZIP code"},
+    {"prop": "country", "dtype": "string", "description": "Country"},
+    {"prop": "url", "dtype": "url", "description": "URL"},
+    # Vault-related properties (backward compat)
+    {"prop": "username", "dtype": "string", "description": "Username"},
+    {"prop": "password", "dtype": "string", "description": "Password"},
+    {"prop": "secret", "dtype": "string", "description": "Secret/API key"},
+    {"prop": "appName", "dtype": "string", "description": "Application name"},
+    {"prop": "cardNumber", "dtype": "string", "description": "Card number"},
+    {"prop": "cardExpiry", "dtype": "string", "description": "Card expiry"},
+    {"prop": "cardCvv", "dtype": "string", "description": "Card CVV"},
+    {"prop": "billingAddress", "dtype": "string", "description": "Billing address"},
+    {"prop": "identityNumber", "dtype": "string", "description": "Identity number"},
 ]
 
+# Knowshowgo v0.1 Prototypes (minimal set for agent functionality)
+# Aligned with Knowshowgo_SYSTEM_DESIGN_v0.1.md
+# Root
 DEFAULT_PROTOTYPES = [
-    "Agent",
-    "ContactMethod",
+    "BasePrototype",  # Root schema (all prototypes inherit from this)
+    # Public semantic registry (minimum useful set)
+    "Person",
+    "Organization",
     "Place",
-    "TimeInterval",
+    "Thing",  # Generic physical object
+    "DigitalResource",  # URL-anchored resource
+    "CreativeWork",  # Article/post/video
+    # Assistant / learning agent (minimum useful set)
     "Event",
     "Task",
-    "Message",
-    "Document",
-    "Device",
-    "PreferenceRule",
-    "Object",
-    "List",
-    "DAG",
-    "Tag",
-    "Queue",
-    "Procedure",
-    "Step",
-    "Vault",
-    "Credential",
-    "PaymentMethod",
-    "Identity",
-    "FormData",
+    "Project",
+    "Commandlet",  # Primitive IO op
+    "Procedure",  # Learned workflow
+    "Step",  # Sequence/DAG node
+    "Trigger",  # Condition/trigger
+    "QueueItem",  # Priority queue item
+    "WebResource",  # Site identity (e.g., linkedin.com)
+    # Backward compat (keep for existing code)
+    "Object",  # Generic object (maps to Thing)
+    "List",  # List container
+    "DAG",  # Directed acyclic graph
+    "Queue",  # Queue container
 ]
 
 # Prototype inheritance mapping child -> parent
+# Aligned with Knowshowgo design: all prototypes inherit from BasePrototype
 PROTOTYPE_INHERITS = {
+    # All prototypes inherit from BasePrototype
+    "Person": "BasePrototype",
+    "Organization": "BasePrototype",
+    "Place": "BasePrototype",
+    "Thing": "BasePrototype",
+    "DigitalResource": "BasePrototype",
+    "CreativeWork": "BasePrototype",
+    "Event": "BasePrototype",
+    "Task": "BasePrototype",
+    "Project": "BasePrototype",
+    "Commandlet": "BasePrototype",
+    "Procedure": "BasePrototype",
+    "Step": "BasePrototype",
+    "Trigger": "BasePrototype",
+    "QueueItem": "BasePrototype",
+    "WebResource": "BasePrototype",
+    # Backward compat inheritance
     "DAG": "List",
     "Queue": "List",
-    "Procedure": "DAG",
-    "Credential": "Vault",
-    "PaymentMethod": "Vault",
-    "Identity": "Vault",
-    "FormData": "Vault",
+    "Object": "BasePrototype",
+    "List": "BasePrototype",
 }
 
 DEFAULT_OBJECTS = [
@@ -119,46 +164,83 @@ class KSGStore:
     def ensure_seeds(self, embedding_fn=None) -> Dict[str, List[str]]:
         ensured = {"property_defs": [], "prototypes": [], "objects": []}
         prov = self._prov("ksg-seed")
-        # Seed property defs
+        # Seed property defs (as PropertyDef nodes per Knowshowgo design)
         for pd in DEFAULT_PROPERTY_DEFS:
+            prop_name = pd["prop"]
+            dtype = pd["dtype"]
+            description = pd.get("description", f"{prop_name} property")
             node = Node(
                 kind="PropertyDef",
-                labels=["PropertyDef"],
-                props={"propertyName": pd["prop"], "dtype": pd["dtype"]},
+                labels=["PropertyDef", prop_name],
+                props={
+                    "name": prop_name,  # PropertyDef name
+                    "valueType": dtype,  # Knowshowgo: valueType (string|number|boolean|date|url|json|topic_ref)
+                    "cardinality": "0..*",  # Default cardinality
+                    "description": description,
+                    "status": "active",
+                },
             )
             if embedding_fn:
                 try:
-                    node.llm_embedding = embedding_fn(f"{pd['prop']} {pd['dtype']}")
+                    node.llm_embedding = embedding_fn(f"{prop_name} {description}")
                 except Exception:
                     node.llm_embedding = None
             self.memory.upsert(node, prov, embedding_request=True)
             ensured["property_defs"].append(node.uuid)
 
-        # Seed prototypes
+        # Seed prototypes (as Topics with isPrototype=true per Knowshowgo design)
         proto_nodes: Dict[str, Node] = {}
         for proto in DEFAULT_PROTOTYPES:
+            # Create Prototype as Topic with isPrototype=true
+            # Use proto name as primary label
+            label = proto
+            summary = self._get_prototype_summary(proto)
             node = Node(
-                kind="Prototype",
-                labels=["Prototype", proto],
-                props={"protoId": proto, "version": "1.0.0", "immutable": True},
+                kind="topic",  # All nodes are Topics in Knowshowgo
+                labels=[label],  # Primary label
+                props={
+                    "label": label,  # Primary label
+                    "aliases": [],  # Additional labels
+                    "summary": summary,
+                    "isPrototype": True,  # Mark as Prototype
+                    "status": "active",
+                    "namespace": "public",
+                    "protoId": proto,  # Backward compat
+                    "version": "1.0.0",
+                    "immutable": True,
+                },
             )
             if embedding_fn:
                 try:
-                    node.llm_embedding = embedding_fn(proto)
+                    node.llm_embedding = embedding_fn(f"{proto} {summary}")
                 except Exception:
                     node.llm_embedding = None
             self.memory.upsert(node, prov, embedding_request=True)
             ensured["prototypes"].append(node.uuid)
             proto_nodes[proto] = node
 
-        # Link prototype inheritance edges
+        # Link prototype inheritance edges (inherits edge per Knowshowgo design)
+        # Find PropertyDef for "instanceOf" to use as predicate reference (p)
+        instance_of_prop_def_uuid = None
+        for pd_uuid in ensured["property_defs"]:
+            # Search for instanceOf PropertyDef
+            # Note: This is simplified; in production would query by name
+            pass  # Will use rel="inherits" for now, can enhance later with PropertyDef lookup
+        
         for child, parent in PROTOTYPE_INHERITS.items():
             if child in proto_nodes and parent in proto_nodes:
+                # Use "inherits" edge (Knowshowgo design uses "inherits" edge collection)
+                # Can optionally add PropertyDef reference (p) if instanceOf PropertyDef is found
                 self.add_assoc(
                     from_uuid=proto_nodes[child].uuid,
                     to_uuid=proto_nodes[parent].uuid,
-                    rel="inherits_from",
-                    props={"child": child, "parent": parent},
+                    rel="inherits",  # Knowshowgo: inherits edge collection
+                    props={
+                        "child": child,
+                        "parent": parent,
+                        "w": 1.0,  # Weight (fuzzy association strength)
+                        "status": "accepted",
+                    },
                     trace_id="ksg-proto-inherit",
                 )
 
@@ -174,6 +256,32 @@ class KSGStore:
             ensured["objects"].append(node.uuid)
 
         return ensured
+
+    def _get_prototype_summary(self, proto_name: str) -> str:
+        """Get summary/description for a prototype."""
+        summaries = {
+            "BasePrototype": "Root prototype for all prototypes (schema definitions)",
+            "Person": "A human individual",
+            "Organization": "An organization or company",
+            "Place": "A physical location",
+            "Thing": "Generic physical object",
+            "DigitalResource": "URL-anchored digital resource",
+            "CreativeWork": "Article, post, video, or other creative work",
+            "Event": "A calendar event or scheduled occurrence",
+            "Task": "A task or to-do item",
+            "Project": "A project containing multiple tasks",
+            "Commandlet": "Primitive IO operation (HTTP_GET, BROWSER_GOTO, etc.)",
+            "Procedure": "Learned workflow with steps",
+            "Step": "A step in a procedure (sequence/DAG node)",
+            "Trigger": "Trigger or condition for procedure execution",
+            "QueueItem": "Item in a priority queue",
+            "WebResource": "Web site identity (e.g., linkedin.com)",
+            "Object": "Generic object (backward compat)",
+            "List": "List container",
+            "DAG": "Directed acyclic graph",
+            "Queue": "Queue container",
+        }
+        return summaries.get(proto_name, f"{proto_name} prototype")
 
     def add_tag(
         self,

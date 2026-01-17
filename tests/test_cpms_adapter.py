@@ -64,7 +64,7 @@ class TestCPMSAdapter(unittest.TestCase):
 
 
 class FakeCpmsClientWithPatterns(FakeCpmsClient):
-    """Extended fake client that supports pattern detection"""
+    """Extended fake client that supports pattern detection via detect_form() method (cpms-client v0.1.2+)"""
     
     def detect_form(self, html, screenshot_path=None, screenshot=None, url=None, dom_snapshot=None, observation=None):
         """Mock CPMS v0.1.2+ detect_form() API."""

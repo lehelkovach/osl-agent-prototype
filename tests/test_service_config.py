@@ -1,5 +1,6 @@
 import os
 from unittest import mock
+from unittest.mock import patch
 
 from src.personal_assistant import service
 from src.personal_assistant.openai_client import FakeOpenAIClient
@@ -24,8 +25,10 @@ def test_default_agent_respects_config_flags(monkeypatch):
         "arango": {"url": ""},
         "chroma": {"path": ".chroma-test"},
     }
+    # Mock load_dotenv to prevent .env.local from overriding test config
     with mock.patch.dict(os.environ, {}, clear=True):
-        agent = service.default_agent_from_env(cfg)
+        with patch('src.personal_assistant.service.load_dotenv'):
+            agent = service.default_agent_from_env(cfg)
     # Fake client should be selected from config flag
     assert isinstance(agent.openai_client, FakeOpenAIClient)
     # Memory should be initialized (Chroma fallback or mock)

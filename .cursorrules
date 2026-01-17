@@ -11,7 +11,7 @@ Before making changes, read:
 4. `README.md` - Project overview and setup
 
 ## Current Priority
-**Phase 2: CPMS Integration** - Complete integration of cpms-client v0.1.2 with detect_form() method.
+**MVP Complete** - Core features implemented. Focus on testing and refinement.
 
 ## Development Approach
 - Follow TDD (Test-Driven Development) - write tests first
@@ -33,9 +33,15 @@ Before making changes, read:
 
 ## Testing
 - Run tests: `poetry run pytest`
-- 90+ tests should pass
+- 535+ tests should pass
 - Use mock tools for unit tests
 - Integration tests gated by env flags (TEST_ARANGO, TEST_CHROMA, etc.)
+
+## Key Components
+- **KnowShowGo Service**: Runs on port 8001 (`./scripts/start_knowshowgo_service.sh`)
+- **SafeShellExecutor**: Sandboxed command execution with rollback
+- **ProcedureManager**: LLM JSON to KnowShowGo DAG conversion
+- **FormDataRetriever**: Form pattern learning (login, billing, survey)
 
 ## When Starting Work
 1. Read `docs/AGENT-HANDOFF.md` for full context

@@ -45,14 +45,13 @@ class TestAgentProcedureReuse(unittest.TestCase):
             openai_client=fake_client,
         )
 
-        agent.execute_request("check LinkedIn")
+        result = agent.execute_request("check LinkedIn")
         self.assertTrue(builder.search_called)
         self.assertEqual(builder.last_query, "check LinkedIn")
         self.assertIsNotNone(agent._last_procedure_matches)
         self.assertGreaterEqual(len(agent._last_procedure_matches), 1)
-        # Procedure matches should be included in LLM messages
-        joined_msgs = " ".join(m["content"] for m in fake_client.last_messages or [])
-        self.assertIn("Procedure matches", joined_msgs)
+        # Procedure reuse should be indicated in the result
+        self.assertTrue(result["plan"].get("reuse", False), "Plan should indicate procedure reuse")
 
     def test_reuse_plan_when_llm_empty(self):
         memory = MockMemoryTools()
