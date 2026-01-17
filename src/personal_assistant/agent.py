@@ -16,6 +16,7 @@ from src.personal_assistant.cpms_adapter import CPMSAdapter
 from src.personal_assistant.procedure_builder import ProcedureBuilder
 from src.personal_assistant.procedure_manager import ProcedureManager
 from src.personal_assistant.knowshowgo import KnowShowGoAPI
+from src.personal_assistant.knowshowgo_adapter import KnowShowGoAdapter
 from src.personal_assistant.dag_executor import DAGExecutor
 from src.personal_assistant.form_filler import FormDataRetriever
 from src.personal_assistant.form_fingerprint import compute_form_fingerprint
@@ -66,7 +67,19 @@ class PersonalAssistantAgent:
             self.openai_client = OpenAIClient()
         else:
             self.openai_client = openai_client
-        self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=self._embed_text)
+        # Use KnowShowGoAdapter for service-ready architecture
+        # Auto-detects: KNOWSHOWGO_URL set → service mode, else → embedded mode
+        if ksg:
+            self.ksg = ksg
+            self._ksg_adapter = None
+        else:
+            self._ksg_adapter = KnowShowGoAdapter.create(
+                memory=memory,
+                embed_fn=self._embed_text,
+            )
+            # Use embedded_api for full API access (pattern evolution, centroids, etc.)
+            # Service mode has limited API - use adapter methods directly when available
+            self.ksg = self._ksg_adapter.embedded_api or KnowShowGoAPI(memory, embed_fn=self._embed_text)
         self.queue_manager = TaskQueueManager(memory, embed_fn=self._embed_text, ksg=self.ksg)
         self.event_bus: EventBus = event_bus or NullEventBus()
         self._last_procedure_matches: Optional[List[Dict[str, Any]]] = None
