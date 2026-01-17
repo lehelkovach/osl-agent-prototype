@@ -1519,12 +1519,80 @@ class PersonalAssistantAgent:
             res = self.web.fill(url=url, selector=selector, text=str(val))
             filled.append({"field": field, "value": val, "selector": selector, "result": res})
 
+        # PATTERN EVOLUTION: If missing fields, try to transfer from similar patterns
+        transferred_from = None
+        if missing and self.ksg:
+            try:
+                similar = self.ksg.find_similar_patterns(
+                    query=f"{url} {form_type or 'form'}",
+                    top_k=3,
+                    min_similarity=0.5,
+                )
+                for sim in similar:
+                    if not sim.get("selectors") and not sim.get("pattern_data"):
+                        continue
+                    # Try to transfer the pattern
+                    transfer_result = self.ksg.transfer_pattern(
+                        source_pattern_uuid=sim["uuid"],
+                        target_context={
+                            "url": url,
+                            "fields": missing,
+                            "form_type": form_type,
+                        },
+                        llm_fn=self._llm_for_transfer,
+                    )
+                    if transfer_result.get("transferred_pattern"):
+                        transferred = transfer_result["transferred_pattern"]
+                        transferred_selectors = transferred.get("selectors", {})
+                        # Try to fill using transferred selectors
+                        for field in list(missing):
+                            if field in transferred_selectors:
+                                sel = transferred_selectors[field]
+                                candidates = synonym_keys.get(field, [field])
+                                val = None
+                                for k in candidates:
+                                    if k in values_by_key:
+                                        val = values_by_key[k]
+                                        break
+                                if val:
+                                    res = self.web.fill(url=url, selector=sel, text=str(val))
+                                    filled.append({"field": field, "value": val, "selector": sel, "result": res, "transferred": True})
+                                    missing.remove(field)
+                        transferred_from = sim["uuid"]
+                        break  # Use first successful transfer
+            except Exception as e:
+                self.log.debug("pattern_transfer_failed", error=str(e))
+
+        # PATTERN EVOLUTION: Record success and try auto-generalization
+        all_success = len(filled) > 0 and len(missing) == 0
+        generalized_uuid = None
+        if all_success and pattern_uuid and self.ksg:
+            try:
+                self.ksg.record_pattern_success(
+                    pattern_uuid=pattern_uuid,
+                    context={"url": url, "fields_filled": len(filled)},
+                )
+                # Try auto-generalization
+                gen_result = self.ksg.auto_generalize(
+                    pattern_uuid=pattern_uuid,
+                    min_similar=2,
+                    min_similarity=0.7,
+                    llm_fn=self._llm_for_transfer,
+                )
+                if gen_result:
+                    generalized_uuid = gen_result.get("generalized_uuid")
+                    self.log.info("auto_generalized", generalized_uuid=generalized_uuid, exemplar_count=gen_result.get("exemplar_count"))
+            except Exception as e:
+                self.log.debug("pattern_success_tracking_failed", error=str(e))
+
         return {
             "status": "success",
             "filled": filled,
             "missing_fields": sorted(set(missing)),
             "pattern_uuid": pattern_uuid,
             "reused": reused,
+            "transferred_from": transferred_from,
+            "generalized_uuid": generalized_uuid,
         }
 
     def _billing_submit_and_verify(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
@@ -1921,6 +1989,34 @@ class PersonalAssistantAgent:
             return self.openai_client.embed(text)
         except Exception:
             return None
+
+    def _llm_for_transfer(self, prompt: str) -> str:
+        """
+        LLM helper for pattern transfer operations.
+        
+        Wraps the OpenAI client for use in KnowShowGo pattern evolution.
+        Used for field mapping and generalization naming.
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            
+        Returns:
+            LLM response text (expects JSON)
+        """
+        try:
+            messages = [
+                {"role": "system", "content": "You are a helpful assistant that responds only with valid JSON."},
+                {"role": "user", "content": prompt},
+            ]
+            response = self.openai_client.chat(
+                messages=messages,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            return response.get("content", "")
+        except Exception as e:
+            self.log.debug("llm_for_transfer_failed", error=str(e))
+            return "{}"
 
     # -------------------------------------------------------------------------
     # Working Memory Integration (Salvage Step D)
