@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "base_url": "http://${HOST}:${PORT}",
+  "endpoint": "/chat",
+  "steps": [
+    {
+      "name": "remember_personal_info",
+      "message": "Remember my personal info: birth_month 01, birth_day 02, birth_year 1990, zip_code 12345."
+    },
+    {
+      "name": "run_multi_step_survey",
+      "message": "Fill the survey at ${SURVEY_URL} using stored personal info. Use survey.fill_multi_step with session_id 'survey-live', continue_selector '${CONTINUE_SELECTOR}', finish_selectors ['${FINISH_SELECTOR}'], confidence_threshold 0.9, ask_on_low_confidence true. If missing data, ask me.",
+      "expect_status": "completed"
+    },
+    {
+      "name": "close_session",
+      "message": "Close the survey session using web.close_session for session_id survey-live."
+    }
+  ]
+}

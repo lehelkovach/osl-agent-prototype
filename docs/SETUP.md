@@ -71,6 +71,9 @@ chmod +x ./scripts/run_live_form_flow.sh
 # Run a live multi-step survey flow
 chmod +x ./scripts/run_live_survey_flow.sh
 SURVEY_URL="https://your-survey-url" ./scripts/run_live_survey_flow.sh
+
+# Or run a YAML-defined flow
+python3 ./scripts/run_live_flow.py --config scripts/live_survey_flow.yaml
 ```
 
 This flow:
