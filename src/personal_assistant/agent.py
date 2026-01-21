@@ -1272,6 +1272,14 @@ class PersonalAssistantAgent:
                                             **cmd
                                         }
                                     )
+                                    try:
+                                        task_node.llm_embedding = self._embed_text(task_node.props.get("title", ""))
+                                    except Exception:
+                                        task_node.llm_embedding = None
+                                    try:
+                                        self.memory.upsert(task_node, provenance, embedding_request=True)
+                                    except Exception:
+                                        pass
                                     self.queue_manager.enqueue(task_node, provenance)
                             result = self.dag_executor.execute_dag(concept_uuid, context=params.get("context"), enqueue_fn=enqueue_cmd)
                             res = {"status": "success", "dag_result": result}
