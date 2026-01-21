@@ -913,6 +913,8 @@ class PersonalAssistantAgent:
                     self._record_form_element(params, provenance, action="fill")
                 elif tool_name == "web.wait_for" and self.web:
                     res = self.web.wait_for(**params)
+                elif tool_name == "web.scroll" and self.web:
+                    res = self.web.scroll(**params)
                 elif tool_name == "web.close_session" and self.web:
                     try:
                         session_id = params.get("session_id")

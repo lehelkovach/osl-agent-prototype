@@ -133,12 +133,28 @@ class PlaywrightWebTools(WebTools):
             img_bytes = self._try_screenshot(page)
             img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
             path = self._maybe_save(u, img_bytes, suffix="dom.png") if img_bytes else None
+            scroll_metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth,
+                    viewportHeight: window.innerHeight,
+                    viewportWidth: window.innerWidth
+                })"""
+            )
             return {
                 "status": response.status if response else 0,
                 "url": u,
                 "html": body,
                 "screenshot_base64": img_b64,
                 "screenshot_path": path,
+                "scroll_y": scroll_metrics.get("scrollY"),
+                "scroll_x": scroll_metrics.get("scrollX"),
+                "scroll_height": scroll_metrics.get("scrollHeight"),
+                "scroll_width": scroll_metrics.get("scrollWidth"),
+                "viewport_height": scroll_metrics.get("viewportHeight"),
+                "viewport_width": scroll_metrics.get("viewportWidth"),
             }
 
         if session_id:
@@ -147,6 +163,16 @@ class PlaywrightWebTools(WebTools):
             img_bytes = self._try_screenshot(page)
             img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
             path = self._maybe_save(url, img_bytes, suffix="dom.png") if img_bytes else None
+            scroll_metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth,
+                    viewportHeight: window.innerHeight,
+                    viewportWidth: window.innerWidth
+                })"""
+            )
             state["last_url"] = page.url
             return {
                 "status": 200,
@@ -155,8 +181,72 @@ class PlaywrightWebTools(WebTools):
                 "screenshot_base64": img_b64,
                 "screenshot_path": path,
                 "session_id": session_id,
+                "scroll_y": scroll_metrics.get("scrollY"),
+                "scroll_x": scroll_metrics.get("scrollX"),
+                "scroll_height": scroll_metrics.get("scrollHeight"),
+                "scroll_width": scroll_metrics.get("scrollWidth"),
+                "viewport_height": scroll_metrics.get("viewportHeight"),
+                "viewport_width": scroll_metrics.get("viewportWidth"),
             }
         return self._with_page(url, action)
+
+    def scroll(
+        self,
+        url: str,
+        direction: str = "down",
+        amount: int = 800,
+        session_id: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        def do_scroll(page, u):
+            page.goto(u)
+            if x is not None or y is not None:
+                target_x = x or 0
+                target_y = y or 0
+                page.evaluate("([sx, sy]) => window.scrollTo(sx, sy)", [target_x, target_y])
+            else:
+                delta = int(amount)
+                if direction.lower() == "up":
+                    delta = -abs(delta)
+                elif direction.lower() == "down":
+                    delta = abs(delta)
+                page.evaluate("([dx, dy]) => window.scrollBy(dx, dy)", [0, delta])
+            metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth
+                })"""
+            )
+            return {"status": 200, "url": u, "scroll": metrics}
+
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            if x is not None or y is not None:
+                target_x = x or 0
+                target_y = y or 0
+                page.evaluate("([sx, sy]) => window.scrollTo(sx, sy)", [target_x, target_y])
+            else:
+                delta = int(amount)
+                if direction.lower() == "up":
+                    delta = -abs(delta)
+                elif direction.lower() == "down":
+                    delta = abs(delta)
+                page.evaluate("([dx, dy]) => window.scrollBy(dx, dy)", [0, delta])
+            metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth
+                })"""
+            )
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "scroll": metrics, "session_id": session_id}
+
+        return self._with_page(url, do_scroll)
 
     def locate_bounding_box(self, url: str, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """

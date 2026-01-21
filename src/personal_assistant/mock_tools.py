@@ -194,6 +194,12 @@ class MockWebTools(WebTools):
             "url": url,
             "html": html,
             "screenshot_base64": screenshot_b64,
+            "scroll_y": 0,
+            "scroll_x": 0,
+            "scroll_height": 1000,
+            "scroll_width": 1200,
+            "viewport_height": 800,
+            "viewport_width": 1200,
         }
         self.history.append({"method": "GET_DOM", "url": url, "response": response})
         self._safe_log(f"Mock GET_DOM: {url}")
@@ -251,6 +257,20 @@ class MockWebTools(WebTools):
         response = {"status": 200, "url": url, "action": "wait_for", "selector": selector, "timeout_ms": timeout_ms}
         self.history.append({"method": "WAIT_FOR", "url": url, "selector": selector, "timeout_ms": timeout_ms, "response": response})
         print(f"Mock WAIT_FOR: {url} {selector} timeout={timeout_ms}")
+        return response
+
+    def scroll(
+        self,
+        url: str,
+        direction: str = "down",
+        amount: int = 800,
+        session_id: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        response = {"status": 200, "url": url, "direction": direction, "amount": amount, "x": x, "y": y}
+        self.history.append({"method": "SCROLL", "url": url, "response": response})
+        self._safe_log(f"Mock SCROLL: {url} {direction} {amount}")
         return response
 
     def close_session(self, session_id: str) -> Dict[str, Any]:
