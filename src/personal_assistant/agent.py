@@ -913,6 +913,17 @@ class PersonalAssistantAgent:
                     self._record_form_element(params, provenance, action="fill")
                 elif tool_name == "web.wait_for" and self.web:
                     res = self.web.wait_for(**params)
+                elif tool_name == "web.close_session" and self.web:
+                    try:
+                        session_id = params.get("session_id")
+                        if not session_id:
+                            res = {"status": "error", "error": "session_id required"}
+                        elif hasattr(self.web, "close_session"):
+                            res = self.web.close_session(session_id)
+                        else:
+                            res = {"status": "error", "error": "WebTools does not support sessions"}
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc)}
                 elif tool_name == "shell.run" and self.shell:
                     res = self.shell.run(**params)
                 elif tool_name == "queue.enqueue":
@@ -1306,6 +1317,8 @@ class PersonalAssistantAgent:
                     res = self._billing_prompt_for_data(params)
                 elif tool_name == "survey.fill_and_submit":
                     res = self._survey_fill_and_submit(params, provenance)
+                elif tool_name == "survey.fill_multi_step":
+                    res = self._survey_fill_multi_step(params, provenance)
                 elif tool_name == "survey.store_response":
                     res = self._survey_store_response(params, provenance)
                 elif tool_name == "survey.prompt_for_missing":
@@ -1980,12 +1993,13 @@ class PersonalAssistantAgent:
         url = params.get("url")
         if not url:
             return {"status": "error", "error": "url required"}
+        session_id = params.get("session_id")
         
         # Get form fields if not provided
         form_fields = params.get("form_fields", [])
         
         # Get page DOM to detect form fields
-        dom_result = self.web.get_dom(url)
+        dom_result = self.web.get_dom(url, session_id=session_id) if session_id else self.web.get_dom(url)
         html = dom_result.get("html", "") or dom_result.get("body", "")
         
         # If no form fields provided, try to detect them from DOM
@@ -2031,7 +2045,10 @@ class PersonalAssistantAgent:
                 selector = f'#{field_name}, [name="{field_name}"], [id="{field_name}"]'
             
             try:
-                res = self.web.fill(url=url, selector=selector, text=str(value))
+                if session_id:
+                    res = self.web.fill(url=url, selector=selector, text=str(value), session_id=session_id)
+                else:
+                    res = self.web.fill(url=url, selector=selector, text=str(value))
                 filled.append({
                     "field": field_name,
                     "value": value,
@@ -2045,7 +2062,10 @@ class PersonalAssistantAgent:
         submit_selector = params.get("submit_selector")
         if submit_selector:
             try:
-                self.web.click_selector(url=url, selector=submit_selector)
+                if session_id:
+                    self.web.click_selector(url=url, selector=submit_selector, session_id=session_id)
+                else:
+                    self.web.click_selector(url=url, selector=submit_selector)
             except Exception:
                 pass
         
@@ -2066,6 +2086,215 @@ class PersonalAssistantAgent:
             "missing": [],
             "stored": True,
             "message": f"Filled {len(filled)} fields successfully"
+        }
+
+    def _survey_fill_multi_step(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
+        """
+        Fill a multi-step survey form with continue/finish navigation.
+
+        params:
+          - url: str
+          - session_id: optional str (keeps browser state across steps)
+          - form_fields: optional list for first page
+          - max_pages: int (default 10)
+          - continue_selector: optional str (preferred selector)
+          - continue_selectors: optional list[str] (fallbacks)
+          - finish_selectors: optional list[str]
+          - confidence_threshold: float (default 0.9)
+          - ask_on_low_confidence: bool (default True)
+          - ask_on_missing: bool (default True)
+          - store_response: bool (default True)
+          - answers: optional dict (user-provided overrides)
+
+        Returns:
+            - status: "success" | "ask_user" | "error"
+            - filled: list
+            - missing: list
+            - prompt: optional
+            - confidence: float
+            - session_id: str
+        """
+        if not self.web:
+            return {"status": "error", "error": "WebTools not configured"}
+
+        url = params.get("url")
+        if not url:
+            return {"status": "error", "error": "url required"}
+
+        session_id = params.get("session_id") or f"survey-{provenance.trace_id}"
+        max_pages = int(params.get("max_pages") or 10)
+        confidence_threshold = float(params.get("confidence_threshold") or 0.9)
+        ask_on_low = params.get("ask_on_low_confidence", True)
+        ask_on_missing = params.get("ask_on_missing", True)
+        store_response = params.get("store_response", True)
+
+        continue_selector = params.get("continue_selector")
+        continue_selectors = params.get("continue_selectors") or []
+        if continue_selector:
+            continue_selectors.insert(0, continue_selector)
+        if not continue_selectors:
+            continue_selectors = [
+                "button:has-text(\"Continue\")",
+                "text=Continue",
+                "button[type='submit']",
+                "input[type='submit']",
+            ]
+        finish_selectors = params.get("finish_selectors") or [
+            "button:has-text(\"Finish\")",
+            "text=Finish",
+            "button:has-text(\"Submit\")",
+            "text=Submit",
+        ]
+
+        answers = params.get("answers") or {}
+        logic: List[Dict[str, Any]] = []
+        filled_all: List[Dict[str, Any]] = []
+        collected_answers: Dict[str, Any] = {}
+
+        def _click_first(selectors: List[str]) -> Dict[str, Any]:
+            errors = []
+            for sel in selectors:
+                try:
+                    res = self.web.click_selector(url=url, selector=sel, session_id=session_id)
+                    return {"clicked": True, "selector": sel, "result": res}
+                except Exception as exc:
+                    errors.append(str(exc))
+            return {"clicked": False, "errors": errors}
+
+        for page_idx in range(max_pages):
+            dom_result = self.web.get_dom(url, session_id=session_id)
+            html = dom_result.get("html", "") or dom_result.get("body", "")
+            form_fields = params.get("form_fields", [])
+            if not form_fields and html:
+                form_fields = self._detect_form_fields(html)
+
+            autofill_result = self.form_retriever.build_survey_autofill(
+                form_fields=form_fields,
+                query="survey personal info contact",
+                top_k=20,
+            )
+            autofill = autofill_result.get("autofill", {})
+            missing = autofill_result.get("missing", [])
+            missing_labels = autofill_result.get("missing_labels", {})
+
+            # Apply explicit answers
+            for field, value in answers.items():
+                if value is not None:
+                    autofill[field] = value
+            missing = [f for f in missing if f not in answers]
+
+            confidence = autofill_result.get("confidence", 0.0)
+            if form_fields:
+                confidence = len(autofill) / max(len(form_fields), 1)
+
+            logic.append(
+                {
+                    "page": page_idx + 1,
+                    "fields_detected": len(form_fields),
+                    "filled_fields": len(autofill),
+                    "missing_fields": len(missing),
+                    "confidence": confidence,
+                }
+            )
+
+            if missing and ask_on_missing:
+                prompt = self.form_retriever.build_survey_prompt(missing, missing_labels)
+                return {
+                    "status": "ask_user",
+                    "missing": missing,
+                    "missing_labels": missing_labels,
+                    "prompt": prompt,
+                    "confidence": confidence,
+                    "session_id": session_id,
+                    "page": page_idx + 1,
+                    "logic": logic,
+                    "dom_snapshot": {
+                        "html": html[:2000],
+                        "screenshot_path": dom_result.get("screenshot_path"),
+                    },
+                }
+
+            if ask_on_low and confidence < confidence_threshold:
+                planned_fills = []
+                for field_name, value in autofill.items():
+                    selector = None
+                    for f in form_fields:
+                        if f.get("field_name") == field_name:
+                            selector = f.get("selector")
+                            break
+                    if not selector:
+                        selector = f'#{field_name}, [name="{field_name}"], [id="{field_name}"]'
+                    planned_fills.append(
+                        {"tool": "web.fill", "params": {"url": url, "selector": selector, "text": str(value)}}
+                    )
+                prompt = (
+                    f"I can fill {len(autofill)} of {len(form_fields)} fields "
+                    f"(confidence {confidence:.0%}). Please confirm or provide missing values."
+                )
+                return {
+                    "status": "ask_user",
+                    "missing": missing,
+                    "prompt": prompt,
+                    "confidence": confidence,
+                    "session_id": session_id,
+                    "page": page_idx + 1,
+                    "logic": logic,
+                    "dom_snapshot": {
+                        "html": html[:2000],
+                        "screenshot_path": dom_result.get("screenshot_path"),
+                    },
+                    "autofill": autofill,
+                    "planned_steps": planned_fills,
+                }
+
+            filled = []
+            for field_name, value in autofill.items():
+                selector = None
+                for f in form_fields:
+                    if f.get("field_name") == field_name:
+                        selector = f.get("selector")
+                        break
+                if not selector:
+                    selector = f'#{field_name}, [name="{field_name}"], [id="{field_name}"]'
+                try:
+                    res = self.web.fill(url=url, selector=selector, text=str(value), session_id=session_id)
+                    filled.append(
+                        {"field": field_name, "value": value, "selector": selector, "result": res}
+                    )
+                    collected_answers[field_name] = value
+                except Exception as exc:
+                    self.log.warning("survey_fill_error", field=field_name, error=str(exc))
+            filled_all.extend(filled)
+
+            # Try to continue
+            clicked = _click_first(continue_selectors)
+            if clicked.get("clicked"):
+                continue
+
+            # Try finish if no continue
+            finished = _click_first(finish_selectors)
+            if finished.get("clicked"):
+                break
+
+            # No navigation buttons detected; stop
+            break
+
+        if store_response and collected_answers:
+            self.form_retriever.store_survey_response(
+                form_url=url,
+                questions_and_answers=[{"field_name": k, "answer": v} for k, v in collected_answers.items()],
+                form_title=params.get("form_title"),
+            )
+
+        return {
+            "status": "success",
+            "filled": filled_all,
+            "missing": [],
+            "pages_completed": min(max_pages, len(logic)),
+            "confidence": logic[-1]["confidence"] if logic else 0.0,
+            "session_id": session_id,
+            "logic": logic,
+            "stored": bool(store_response and collected_answers),
         }
     
     def _survey_store_response(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:

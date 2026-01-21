@@ -67,6 +67,10 @@ poetry run python -m src.personal_assistant.service
 # Run a live form flow (requires real LLM + Playwright for full fidelity)
 chmod +x ./scripts/run_live_form_flow.sh
 ./scripts/run_live_form_flow.sh
+
+# Run a live multi-step survey flow
+chmod +x ./scripts/run_live_survey_flow.sh
+SURVEY_URL="https://your-survey-url" ./scripts/run_live_survey_flow.sh
 ```
 
 This flow:
@@ -111,3 +115,9 @@ The agent auto-detects available backends.
 
 For control-flow procedures (loops, conditionals, subprocedures), see:
 `docs/PROCEDURE-GRAPH-SCHEMA.md`
+
+## Multi-step survey flow (sessioned web tools)
+
+The `survey.fill_multi_step` tool uses an optional `session_id` to keep browser
+state across pages. When using Playwright, provide a fixed `session_id` for the
+entire flow and call `web.close_session` once finished.

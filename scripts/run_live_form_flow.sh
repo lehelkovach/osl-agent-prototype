@@ -8,7 +8,7 @@ BASE_URL="http://${HOST}:${PORT}"
 post_msg() {
   local msg="$1"
   local payload
-  payload=$(MSG="${msg}" python - <<'PY'
+  payload=$(MSG="${msg}" python3 - <<'PY'
 import json
 import os
 print(json.dumps({"message": os.environ["MSG"]}))
