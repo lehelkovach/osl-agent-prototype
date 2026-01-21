@@ -2152,6 +2152,7 @@ class PersonalAssistantAgent:
         logic: List[Dict[str, Any]] = []
         filled_all: List[Dict[str, Any]] = []
         collected_answers: Dict[str, Any] = {}
+        seen_pages = set()
 
         def _click_first(selectors: List[str]) -> Dict[str, Any]:
             errors = []
@@ -2166,6 +2167,10 @@ class PersonalAssistantAgent:
         for page_idx in range(max_pages):
             dom_result = self.web.get_dom(url, session_id=session_id)
             html = dom_result.get("html", "") or dom_result.get("body", "")
+            page_signature = f"{len(html)}:{hash(html)}"
+            if page_signature in seen_pages:
+                break
+            seen_pages.add(page_signature)
             form_fields = params.get("form_fields", [])
             if not form_fields and html:
                 form_fields = self._detect_form_fields(html)

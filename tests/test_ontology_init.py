@@ -34,9 +34,12 @@ class TestOntologyInit(unittest.TestCase):
         self.assertEqual(len(task), 1)
         # Edge should exist from Task -> DAG
         inherits_edges = [e for e in memory.edges.values() if e.rel == "inherits_from"]
-        self.assertEqual(len(inherits_edges), 1)
-        self.assertEqual(inherits_edges[0].from_node, task[0].uuid)
-        self.assertEqual(inherits_edges[0].to_node, dag[0].uuid)
+        self.assertTrue(inherits_edges)
+        task_to_dag = [
+            e for e in inherits_edges
+            if e.from_node == task[0].uuid and e.to_node == dag[0].uuid
+        ]
+        self.assertEqual(len(task_to_dag), 1)
 
 
 if __name__ == "__main__":

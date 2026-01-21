@@ -75,12 +75,13 @@ class DAGExecutor:
         return getattr(edge, "rel", None)
 
     def _node_id(self, node: Dict[str, Any], idx: int) -> str:
+        props = node.get("props", {}) if isinstance(node, dict) else {}
         return (
             node.get("id")
             or node.get("step_id")
+            or props.get("step_id")
+            or props.get("id")
             or node.get("uuid")
-            or node.get("props", {}).get("step_id")
-            or node.get("props", {}).get("id")
             or str(idx)
         )
 
