@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import re
 import os
 from datetime import datetime, timezone, timedelta
@@ -1409,6 +1409,10 @@ class PersonalAssistantAgent:
           - required_fields: optional [field]
           - query: optional str (memory query)
           - form_type: optional str (login/billing/etc.)
+          - submit_selector: optional str (click after fill)
+          - auto_submit: optional bool (click submit when available)
+          - verify_login: optional bool (check DOM markers after submit)
+          - prompt_on_missing: optional bool (default True)
           - reuse_min_score: optional float (for pattern reuse)
         """
         if not self.web:
@@ -1416,29 +1420,107 @@ class PersonalAssistantAgent:
         url = params.get("url") or ""
         if not url:
             return {"status": "error", "error": "url required"}
+        form_type = params.get("form_type")
+        prompt_on_missing = params.get("prompt_on_missing", True)
+        query = params.get("query", "form data")
+
+        synonym_keys = {
+            "email": ["email", "username", "user"],
+            "username": ["username", "email", "user"],
+            "password": ["password", "pass", "pwd"],
+            "card_number": ["card_number", "cardNumber", "cc_number", "cc", "card"],
+            "expiry": ["expiry", "exp", "exp_date", "expiration"],
+            "cvv": ["cvv", "cvc", "security_code", "securitycode"],
+        }
+
+        def _is_fill_error(result: Dict[str, Any]) -> bool:
+            if not isinstance(result, dict):
+                return True
+            status = result.get("status")
+            if isinstance(status, str) and status in ("error", "failed"):
+                return True
+            if result.get("error"):
+                return True
+            if isinstance(status, int) and status >= 400:
+                return True
+            return False
+
+        def _build_normalized_maps(values: Dict[str, Any], sources: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+            values_by_norm: Dict[str, Any] = {}
+            sources_by_norm: Dict[str, str] = {}
+            for key, val in values.items():
+                norm = self.form_retriever.normalize_field_name(key)
+                if norm not in values_by_norm:
+                    values_by_norm[norm] = val
+                    sources_by_norm[norm] = sources.get(key, "")
+            return {"values": values_by_norm, "sources": sources_by_norm}
+
+        def _pick_value(field: str, values: Dict[str, Any], sources: Dict[str, str], norm_maps: Dict[str, Dict[str, Any]]) -> Tuple[Optional[Any], Optional[str]]:
+            candidates = synonym_keys.get(field, [field])
+            for key in candidates:
+                if key in values:
+                    return values[key], sources.get(key)
+            normalized = self.form_retriever.normalize_field_name(field)
+            if normalized in norm_maps["values"]:
+                return norm_maps["values"][normalized], norm_maps["sources"].get(normalized)
+            return None, None
 
         # If selectors were explicitly provided, keep the legacy behavior:
         # fill exactly those selectors using values from memory.
         selectors = params.get("selectors") or {}
         if selectors:
             required_fields = params.get("required_fields") or list(selectors.keys())
-            query = params.get("query", "form data")
-            fill_map = self.form_retriever.build_autofill(required_fields=required_fields, query=query)
+            selection = self.form_retriever.collect_values_for_form(
+                required_fields=required_fields,
+                form_type=form_type,
+                url=url,
+                query=query,
+            )
+            values_by_key = selection.get("values", {})
+            sources_by_key = selection.get("sources", {})
+            norm_maps = _build_normalized_maps(values_by_key, sources_by_key)
             filled = []
+            missing_values = []
+            fill_errors = []
             for field, selector in selectors.items():
-                val = fill_map.get(field)
+                val, source_kind = _pick_value(field, values_by_key, sources_by_key, norm_maps)
                 if val is None:
+                    missing_values.append(field)
                     continue
-                res = self.web.fill(url=url, selector=selector, text=str(val))
-                filled.append({"field": field, "value": val, "selector": selector, "result": res})
-            return {"status": "success", "filled": filled}
+                try:
+                    res = self.web.fill(url=url, selector=selector, text=str(val))
+                except Exception as exc:
+                    res = {"status": "error", "error": str(exc), "selector": selector}
+                if _is_fill_error(res):
+                    fill_errors.append(field)
+                filled.append(
+                    {
+                        "field": field,
+                        "value": val,
+                        "selector": selector,
+                        "result": res,
+                        "source_kind": source_kind,
+                    }
+                )
+            missing_fields = sorted(set(missing_values + fill_errors))
+            prompt = None
+            if prompt_on_missing and missing_fields:
+                prompt = self.form_retriever.build_missing_fields_prompt(missing_fields, form_type=form_type, url=url)
+            status = "ask_user" if prompt else "success"
+            return {
+                "status": status,
+                "filled": filled,
+                "missing_fields": missing_fields,
+                "missing_values": sorted(set(missing_values)),
+                "fill_errors": sorted(set(fill_errors)),
+                "prompt": prompt,
+            }
 
         # Otherwise, derive selectors from stored patterns (reuse-first) or CPMS detection.
         dom = self.web.get_dom(url)
         html = dom.get("html") or dom.get("body") or ""
         screenshot_path = dom.get("screenshot_path")
 
-        form_type = params.get("form_type")
         reuse_min_score = float(params.get("reuse_min_score") or os.getenv("KSG_PATTERN_REUSE_MIN_SCORE", "2.0"))
 
         reused = False
@@ -1483,60 +1565,67 @@ class PersonalAssistantAgent:
 
         # Build selector map from the pattern.
         selector_map: Dict[str, str] = {}
+        submit_selector = params.get("submit_selector")
         fields = pattern_data.get("fields") if isinstance(pattern_data, dict) else None
         if isinstance(fields, list):
             for f in fields:
                 if not isinstance(f, dict):
                     continue
                 ftype = (f.get("type") or "unknown").strip()
-                if ftype in ("submit", "button", "unknown"):
-                    continue
                 sel = f.get("selector") or ""
+                if ftype in ("submit", "button", "unknown"):
+                    if not submit_selector and sel:
+                        submit_selector = sel
+                    continue
                 if sel:
                     selector_map[ftype] = sel
 
         required_fields = params.get("required_fields") or list(selector_map.keys())
-        query = params.get("query", "form data")
 
         # Gather values from memory with minimal synonym support.
-        synonym_keys = {
-            "email": ["email", "username"],
-            "username": ["username", "email"],
-            "password": ["password"],
-        }
-
-        nodes = self.form_retriever.fetch_latest(query=query, top_k=20)
-        values_by_key: Dict[str, Any] = {}
-        for node in nodes:
-            props = node.get("props", {}) if isinstance(node, dict) else {}
-            if not isinstance(props, dict):
-                continue
-            for k, v in props.items():
-                if v is not None and k not in values_by_key:
-                    values_by_key[k] = v
+        selection = self.form_retriever.collect_values_for_form(
+            required_fields=required_fields,
+            form_type=form_type,
+            url=url,
+            query=query,
+        )
+        values_by_key = selection.get("values", {})
+        sources_by_key = selection.get("sources", {})
+        norm_maps = _build_normalized_maps(values_by_key, sources_by_key)
 
         filled: List[Dict[str, Any]] = []
-        missing: List[str] = []
+        missing_values: List[str] = []
+        missing_selectors: List[str] = []
+        fill_errors: List[str] = []
         for field in required_fields:
             selector = selector_map.get(field) or selectors.get(field)
             if not selector:
-                missing.append(field)
+                missing_selectors.append(field)
                 continue
-            candidates = synonym_keys.get(field, [field])
-            val = None
-            for k in candidates:
-                if k in values_by_key:
-                    val = values_by_key[k]
-                    break
+            val, source_kind = _pick_value(field, values_by_key, sources_by_key, norm_maps)
             if val is None:
-                missing.append(field)
+                missing_values.append(field)
                 continue
-            res = self.web.fill(url=url, selector=selector, text=str(val))
-            filled.append({"field": field, "value": val, "selector": selector, "result": res})
+            try:
+                res = self.web.fill(url=url, selector=selector, text=str(val))
+            except Exception as exc:
+                res = {"status": "error", "error": str(exc), "selector": selector}
+            if _is_fill_error(res):
+                fill_errors.append(field)
+            filled.append(
+                {
+                    "field": field,
+                    "value": val,
+                    "selector": selector,
+                    "result": res,
+                    "source_kind": source_kind,
+                }
+            )
 
         # PATTERN EVOLUTION: If missing fields, try to transfer from similar patterns
         transferred_from = None
-        if missing and self.ksg:
+        missing_for_transfer = sorted(set(missing_selectors + fill_errors))
+        if missing_for_transfer and self.ksg:
             try:
                 similar = self.ksg.find_similar_patterns(
                     query=f"{url} {form_type or 'form'}",
@@ -1551,7 +1640,7 @@ class PersonalAssistantAgent:
                         source_pattern_uuid=sim["uuid"],
                         target_context={
                             "url": url,
-                            "fields": missing,
+                            "fields": missing_for_transfer,
                             "form_type": form_type,
                         },
                         llm_fn=self._llm_for_transfer,
@@ -1560,36 +1649,123 @@ class PersonalAssistantAgent:
                         transferred = transfer_result["transferred_pattern"]
                         transferred_selectors = transferred.get("selectors", {})
                         # Try to fill using transferred selectors
-                        for field in list(missing):
+                        for field in list(missing_for_transfer):
                             if field in transferred_selectors:
                                 sel = transferred_selectors[field]
-                                candidates = synonym_keys.get(field, [field])
-                                val = None
-                                for k in candidates:
-                                    if k in values_by_key:
-                                        val = values_by_key[k]
-                                        break
+                                val, source_kind = _pick_value(field, values_by_key, sources_by_key, norm_maps)
                                 if val:
-                                    res = self.web.fill(url=url, selector=sel, text=str(val))
-                                    filled.append({"field": field, "value": val, "selector": sel, "result": res, "transferred": True})
-                                    missing.remove(field)
+                                    try:
+                                        res = self.web.fill(url=url, selector=sel, text=str(val))
+                                    except Exception as exc:
+                                        res = {"status": "error", "error": str(exc), "selector": sel}
+                                    if not _is_fill_error(res):
+                                        filled.append(
+                                            {
+                                                "field": field,
+                                                "value": val,
+                                                "selector": sel,
+                                                "result": res,
+                                                "transferred": True,
+                                                "source_kind": source_kind,
+                                            }
+                                        )
+                                        if field in missing_selectors:
+                                            missing_selectors.remove(field)
+                                        if field in fill_errors:
+                                            fill_errors.remove(field)
                         transferred_from = sim["uuid"]
                         break  # Use first successful transfer
             except Exception as e:
                 self.log.debug("pattern_transfer_failed", error=str(e))
 
+        adapted = False
+        adapted_pattern_uuid = None
+        if (missing_selectors or fill_errors) and self.cpms:
+            try:
+                retry_dom = self.web.get_dom(url)
+                retry_html = retry_dom.get("html") or retry_dom.get("body") or ""
+                retry_screenshot = retry_dom.get("screenshot_path")
+                new_pattern = self.cpms.detect_form_pattern(
+                    html=retry_html,
+                    screenshot_path=retry_screenshot,
+                    url=url,
+                    dom_snapshot=None,
+                )
+                new_selector_map: Dict[str, str] = {}
+                new_fields = new_pattern.get("fields") if isinstance(new_pattern, dict) else None
+                if isinstance(new_fields, list):
+                    for f in new_fields:
+                        if not isinstance(f, dict):
+                            continue
+                        ftype = (f.get("type") or "unknown").strip()
+                        sel = f.get("selector") or ""
+                        if ftype in ("submit", "button", "unknown"):
+                            if not submit_selector and sel:
+                                submit_selector = sel
+                            continue
+                        if sel:
+                            new_selector_map[ftype] = sel
+
+                for field in sorted(set(missing_selectors + fill_errors)):
+                    sel = new_selector_map.get(field)
+                    if not sel:
+                        continue
+                    val, source_kind = _pick_value(field, values_by_key, sources_by_key, norm_maps)
+                    if val is None:
+                        continue
+                    try:
+                        res = self.web.fill(url=url, selector=sel, text=str(val))
+                    except Exception as exc:
+                        res = {"status": "error", "error": str(exc), "selector": sel}
+                    if not _is_fill_error(res):
+                        filled.append(
+                            {
+                                "field": field,
+                                "value": val,
+                                "selector": sel,
+                                "result": res,
+                                "adapted": True,
+                                "source_kind": source_kind,
+                            }
+                        )
+                        if field in missing_selectors:
+                            missing_selectors.remove(field)
+                        if field in fill_errors:
+                            fill_errors.remove(field)
+                        adapted = True
+
+                if adapted and self.use_cpms_for_forms and self.ksg and isinstance(new_pattern, dict):
+                    try:
+                        if "fingerprint" not in new_pattern and retry_html:
+                            new_pattern["fingerprint"] = compute_form_fingerprint(url=url, html=retry_html).to_dict()
+                        safe_name = params.get("pattern_name") or f"{url}:{new_pattern.get('form_type', form_type or 'unknown')}"
+                        emb = self._embed_text(safe_name) or [0.0, 0.0]
+                        adapted_pattern_uuid = self.ksg.store_cpms_pattern(
+                            pattern_name=safe_name,
+                            pattern_data=new_pattern,
+                            embedding=emb,
+                            concept_uuid=pattern_uuid,
+                        )
+                    except Exception:
+                        adapted_pattern_uuid = None
+            except Exception as exc:
+                self.log.debug("pattern_adaptation_failed", error=str(exc))
+
+        missing_fields = sorted(set(missing_values + missing_selectors + fill_errors))
+
         # PATTERN EVOLUTION: Record success and try auto-generalization
-        all_success = len(filled) > 0 and len(missing) == 0
+        all_success = len(filled) > 0 and len(missing_fields) == 0
         generalized_uuid = None
-        if all_success and pattern_uuid and self.ksg:
+        success_pattern_uuid = adapted_pattern_uuid or pattern_uuid
+        if all_success and success_pattern_uuid and self.ksg:
             try:
                 self.ksg.record_pattern_success(
-                    pattern_uuid=pattern_uuid,
+                    pattern_uuid=success_pattern_uuid,
                     context={"url": url, "fields_filled": len(filled)},
                 )
                 # Try auto-generalization
                 gen_result = self.ksg.auto_generalize(
-                    pattern_uuid=pattern_uuid,
+                    pattern_uuid=success_pattern_uuid,
                     min_similar=2,
                     min_similarity=0.7,
                     llm_fn=self._llm_for_transfer,
@@ -1600,14 +1776,47 @@ class PersonalAssistantAgent:
             except Exception as e:
                 self.log.debug("pattern_success_tracking_failed", error=str(e))
 
+        login_result = None
+        if self.form_retriever.normalize_form_type(form_type) == "login":
+            auto_submit = bool(params.get("auto_submit"))
+            verify_login = bool(params.get("verify_login"))
+            if auto_submit and submit_selector:
+                try:
+                    self.web.click_selector(url=url, selector=submit_selector)
+                except Exception:
+                    pass
+            if verify_login:
+                try:
+                    verify_dom = self.web.get_dom(url)
+                    login_result = self.form_retriever.detect_login_result(
+                        page_text=verify_dom.get("text") or verify_dom.get("body") or "",
+                        page_html=verify_dom.get("html") or "",
+                        url_before=url,
+                        url_after=verify_dom.get("url"),
+                    )
+                except Exception:
+                    login_result = None
+
+        prompt = None
+        if prompt_on_missing and missing_fields:
+            prompt = self.form_retriever.build_missing_fields_prompt(missing_fields, form_type=form_type, url=url)
+        status = "ask_user" if prompt else "success"
+
         return {
-            "status": "success",
+            "status": status,
             "filled": filled,
-            "missing_fields": sorted(set(missing)),
+            "missing_fields": missing_fields,
+            "missing_values": sorted(set(missing_values)),
+            "missing_selectors": sorted(set(missing_selectors)),
+            "fill_errors": sorted(set(fill_errors)),
             "pattern_uuid": pattern_uuid,
             "reused": reused,
             "transferred_from": transferred_from,
             "generalized_uuid": generalized_uuid,
+            "adapted": adapted,
+            "adapted_pattern_uuid": adapted_pattern_uuid,
+            "prompt": prompt,
+            "login_result": login_result,
         }
 
     def _billing_submit_and_verify(self, params: Dict[str, Any], provenance: Provenance) -> Dict[str, Any]:
@@ -2187,17 +2396,34 @@ class PersonalAssistantAgent:
 
         # 1) Preferred: load child concepts via has_step edges
         try:
-            if hasattr(self.memory, "edges") and hasattr(self.memory, "nodes"):
+            edges = []
+            if hasattr(self.memory, "get_edges"):
+                edges = self.memory.get_edges(from_node=concept_uuid, rel="has_step")
+            elif hasattr(self.memory, "edges"):
                 edges = [
                     e
                     for e in self.memory.edges.values()
                     if getattr(e, "from_node", None) == concept_uuid and getattr(e, "rel", None) == "has_step"
                 ]
                 if edges:
-                    edges.sort(key=lambda e: (getattr(e, "props", {}) or {}).get("order", 0))
+                    edges.sort(
+                        key=lambda e: (
+                            (e.get("props", {}) if isinstance(e, dict) else getattr(e, "props", {})) or {}
+                        ).get("order", 0)
+                    )
                     steps: List[Dict[str, Any]] = []
                     for edge in edges:
-                        child = self.memory.nodes.get(edge.to_node)
+                        if isinstance(edge, dict):
+                            to_node = edge.get("to_node") or edge.get("_to")
+                            if isinstance(to_node, str) and "/" in to_node:
+                                to_node = to_node.split("/")[-1]
+                        else:
+                            to_node = getattr(edge, "to_node", None)
+                        child = None
+                        if hasattr(self.memory, "get_node"):
+                            child = self.memory.get_node(to_node)
+                        elif hasattr(self.memory, "nodes"):
+                            child = self.memory.nodes.get(to_node)
                         if not child:
                             continue
                         props = child.get("props", {}) if isinstance(child, dict) else getattr(child, "props", {})

@@ -59,6 +59,22 @@ poetry run python -m src.personal_assistant.service
 # → http://localhost:8000/ui
 ```
 
+### Debug daemon + live flow smoke test
+```bash
+# Start the agent with log capture
+./scripts/debug_daemon.sh start
+
+# Run a live form flow (requires real LLM + Playwright for full fidelity)
+chmod +x ./scripts/run_live_form_flow.sh
+./scripts/run_live_form_flow.sh
+```
+
+This flow:
+1) Stores credentials
+2) Creates a login procedure (DAG schema)
+3) Executes via `dag.execute` to queue each step
+4) Asks the agent to recite the stored steps
+
 ### Tests
 ```bash
 # All tests

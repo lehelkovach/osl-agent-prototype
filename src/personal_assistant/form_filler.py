@@ -38,6 +38,26 @@ class FormDataRetriever:
     """
 
     SUPPORTED_KINDS = {"FormData", "Identity", "Credential", "PaymentMethod", "SurveyResponse"}
+    FORM_TYPE_ALIASES = {
+        "sign-in": "login",
+        "signin": "login",
+        "sign_in": "login",
+        "signon": "login",
+        "auth": "login",
+        "authentication": "login",
+        "checkout": "billing",
+        "payment": "billing",
+        "pay": "billing",
+        "invoice": "billing",
+    }
+    LOGIN_SUCCESS_INDICATORS = [
+        "welcome", "signed in", "sign out", "logout", "log out", "my account",
+        "dashboard", "account settings", "profile",
+    ]
+    LOGIN_FAILURE_INDICATORS = [
+        "invalid", "incorrect", "wrong password", "try again", "error",
+        "failed", "unable to sign in", "login failed",
+    ]
 
     def __init__(self, memory: MemoryTools, embed_fn: Optional[EmbedFn] = None):
         self.memory = memory
@@ -100,8 +120,105 @@ class FormDataRetriever:
                         field_map[f] = props[f]
         
         return field_map
+
+    def normalize_form_type(self, form_type: Optional[str]) -> Optional[str]:
+        if not form_type:
+            return None
+        norm = form_type.strip().lower()
+        return self.FORM_TYPE_ALIASES.get(norm, norm)
+
+    def _form_type_kind_tiers(self, form_type: Optional[str]) -> List[List[str]]:
+        norm = self.normalize_form_type(form_type)
+        if norm == "login":
+            return [["Credential"], ["FormData", "Identity"]]
+        if norm == "billing":
+            return [["PaymentMethod"], ["Identity"], ["FormData"]]
+        if norm == "survey":
+            return [["SurveyResponse"], ["Identity"], ["FormData"]]
+        return [["FormData", "Identity"], ["Credential"]]
+
+    def _collect_nodes_for_kinds(
+        self,
+        kinds: List[str],
+        url: Optional[str],
+        query: Optional[str],
+    ) -> List[Dict[str, Any]]:
+        domain = extract_domain(url or "")
+        allowed = set(kinds)
+        nodes: List[Dict[str, Any]] = []
+        seen = set()
+
+        if domain:
+            for node in self.find_for_domain(domain, top_k=10, allowed_kinds=allowed):
+                node_uuid = node.get("uuid")
+                if node_uuid and node_uuid in seen:
+                    continue
+                if node.get("kind") in allowed:
+                    nodes.append(node)
+                    if node_uuid:
+                        seen.add(node_uuid)
+
+        if "PaymentMethod" in allowed:
+            for node in self.get_valid_payment_methods(top_k=5):
+                node_uuid = node.get("uuid")
+                if node_uuid and node_uuid in seen:
+                    continue
+                nodes.append(node)
+                if node_uuid:
+                    seen.add(node_uuid)
+
+        query_text = query or "form data"
+        results = self.memory.search(query_text, top_k=25, query_embedding=None)
+        for r in results:
+            node = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+            kind = node.get("kind")
+            if kind not in allowed:
+                continue
+            node_uuid = node.get("uuid")
+            if node_uuid and node_uuid in seen:
+                continue
+            nodes.append(node)
+            if node_uuid:
+                seen.add(node_uuid)
+
+        return nodes
+
+    def collect_values_for_form(
+        self,
+        required_fields: List[str],
+        form_type: Optional[str] = None,
+        url: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Collect values by prioritizing datasets based on the form type.
+        Returns a dict with 'values' and 'sources' (kind per key).
+        """
+        values_by_key: Dict[str, Any] = {}
+        sources_by_key: Dict[str, str] = {}
+
+        tiers = self._form_type_kind_tiers(form_type)
+        for tier in tiers:
+            nodes = self._collect_nodes_for_kinds(tier, url=url, query=query)
+            for node in nodes:
+                props = node.get("props", {}) if isinstance(node, dict) else {}
+                kind = node.get("kind") or ""
+                if not isinstance(props, dict):
+                    continue
+                for key, val in props.items():
+                    if val is None or key in values_by_key:
+                        continue
+                    values_by_key[key] = val
+                    sources_by_key[key] = kind
+
+        return {"values": values_by_key, "sources": sources_by_key}
     
-    def find_for_domain(self, domain: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def find_for_domain(
+        self,
+        domain: str,
+        top_k: int = 5,
+        allowed_kinds: Optional[set] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Find credentials, identity, or payment info associated with a specific domain.
         
@@ -125,6 +242,8 @@ class FormDataRetriever:
             node = r if isinstance(r, dict) else r.__dict__
             kind = node.get("kind")
             if kind not in self.SUPPORTED_KINDS:
+                continue
+            if allowed_kinds is not None and kind not in allowed_kinds:
                 continue
             
             props = node.get("props", {})
@@ -167,6 +286,32 @@ class FormDataRetriever:
         # Sort by score and return top_k
         scored.sort(key=lambda x: -x[0])
         return [node for _, node in scored[:top_k]]
+
+    def build_missing_fields_prompt(
+        self,
+        missing_fields: List[str],
+        form_type: Optional[str] = None,
+        url: Optional[str] = None,
+    ) -> str:
+        if not missing_fields:
+            return ""
+        norm = self.normalize_form_type(form_type)
+        if norm == "billing":
+            return self.build_payment_prompt()
+        if norm == "login":
+            return self.build_login_prompt(missing_fields, url=url)
+        prompt = "Please provide the following information:\n"
+        for field in missing_fields:
+            prompt += f"- {field.replace('_', ' ').title()}: \n"
+        return prompt
+
+    def build_login_prompt(self, missing_fields: List[str], url: Optional[str] = None) -> str:
+        domain = extract_domain(url or "")
+        header = f"Please provide your login details for {domain}:\n" if domain else "Please provide your login details:\n"
+        prompt = header
+        for field in missing_fields:
+            prompt += f"- {field.replace('_', ' ').title()}: \n"
+        return prompt
     
     def get_missing_fields(
         self,
@@ -659,6 +804,53 @@ class FormDataRetriever:
                 "message": "Could not determine payment result from page content",
                 "reason": None
             }
+
+    def detect_login_result(
+        self,
+        page_text: str,
+        page_html: str = "",
+        url_before: Optional[str] = None,
+        url_after: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        text_lower = (page_text or "").lower()
+        html_lower = (page_html or "").lower()
+        success_hits = [kw for kw in self.LOGIN_SUCCESS_INDICATORS if kw in text_lower]
+        failure_hits = [kw for kw in self.LOGIN_FAILURE_INDICATORS if kw in text_lower]
+
+        # URL change is a weak signal of success.
+        if url_before and url_after and url_before != url_after:
+            success_hits.append("url_changed")
+
+        # If login form still present, lean toward failure/unknown.
+        form_present = "type=\"password\"" in html_lower or "name=\"password\"" in html_lower
+
+        if success_hits and not failure_hits:
+            return {
+                "status": "success",
+                "confidence": min(1.0, 0.2 * len(success_hits)),
+                "message": "Login appears successful",
+                "signals": success_hits[:5],
+            }
+        if failure_hits:
+            return {
+                "status": "failed",
+                "confidence": min(1.0, 0.2 * len(failure_hits)),
+                "message": "Login appears to have failed",
+                "signals": failure_hits[:5],
+            }
+        if form_present:
+            return {
+                "status": "unknown",
+                "confidence": 0.3,
+                "message": "Login form still present; result uncertain",
+                "signals": ["form_present"],
+            }
+        return {
+            "status": "unknown",
+            "confidence": 0.3,
+            "message": "Could not determine login result from page content",
+            "signals": [],
+        }
     
     def store_payment_method(
         self,

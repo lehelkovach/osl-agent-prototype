@@ -21,15 +21,94 @@ class TaskQueueManager:
         self.ksg = ksg or KnowShowGoAPI(memory, embed_fn=embed_fn)
         self._queue_item_prototype_uuid: Optional[str] = None
 
+    def _node_props(self, node: Any) -> Dict[str, Any]:
+        if isinstance(node, dict):
+            return node.get("props", {}) or {}
+        return getattr(node, "props", {}) or {}
+
+    def _node_uuid(self, node: Any) -> Optional[str]:
+        if isinstance(node, dict):
+            return node.get("uuid") or node.get("_key")
+        return getattr(node, "uuid", None)
+
+    def _node_kind(self, node: Any) -> Optional[str]:
+        if isinstance(node, dict):
+            return node.get("kind")
+        return getattr(node, "kind", None)
+
+    def _edge_from(self, edge: Any) -> Optional[str]:
+        if isinstance(edge, dict):
+            val = edge.get("from_node") or edge.get("_from")
+        else:
+            val = getattr(edge, "from_node", None)
+        if isinstance(val, str) and "/" in val:
+            return val.split("/")[-1]
+        return val
+
+    def _edge_to(self, edge: Any) -> Optional[str]:
+        if isinstance(edge, dict):
+            val = edge.get("to_node") or edge.get("_to")
+        else:
+            val = getattr(edge, "to_node", None)
+        if isinstance(val, str) and "/" in val:
+            return val.split("/")[-1]
+        return val
+
+    def _edge_rel(self, edge: Any) -> Optional[str]:
+        if isinstance(edge, dict):
+            return edge.get("rel")
+        return getattr(edge, "rel", None)
+
+    def _iter_nodes(self) -> List[Any]:
+        if hasattr(self.memory, "iter_nodes"):
+            return list(self.memory.iter_nodes())
+        nodes_attr = getattr(self.memory, "nodes", None)
+        if isinstance(nodes_attr, dict):
+            return list(nodes_attr.values())
+        if hasattr(nodes_attr, "all"):
+            return list(nodes_attr.all())
+        return []
+
+    def _get_node(self, uuid: Optional[str]) -> Optional[Any]:
+        if not uuid:
+            return None
+        if hasattr(self.memory, "get_node"):
+            return self.memory.get_node(uuid)
+        nodes_attr = getattr(self.memory, "nodes", None)
+        if hasattr(nodes_attr, "get"):
+            return nodes_attr.get(uuid)
+        return None
+
+    def _iter_edges(self, from_node: Optional[str] = None, rel: Optional[str] = None) -> List[Any]:
+        if hasattr(self.memory, "get_edges"):
+            return self.memory.get_edges(from_node=from_node, rel=rel)
+        edges_attr = getattr(self.memory, "edges", None)
+        if isinstance(edges_attr, dict):
+            edges = list(edges_attr.values())
+        elif hasattr(edges_attr, "all"):
+            edges = list(edges_attr.all())
+        else:
+            return []
+        filtered = []
+        for edge in edges:
+            if rel and self._edge_rel(edge) != rel:
+                continue
+            if from_node and self._edge_from(edge) != from_node:
+                continue
+            filtered.append(edge)
+        return filtered
+
     def _get_queue_item_prototype_uuid(self) -> str:
         """Get QueueItem prototype UUID, creating it if needed."""
         if self._queue_item_prototype_uuid is None:
             # Search for QueueItem prototype
-            for node in self.memory.nodes.values():
-                if (node.kind == "topic" and 
-                    node.props.get("isPrototype") is True and
-                    node.props.get("label") == "QueueItem"):
-                    self._queue_item_prototype_uuid = node.uuid
+            for node in self._iter_nodes():
+                if (
+                    self._node_kind(node) == "topic"
+                    and self._node_props(node).get("isPrototype") is True
+                    and self._node_props(node).get("label") == "QueueItem"
+                ):
+                    self._queue_item_prototype_uuid = self._node_uuid(node)
                     break
             
             # If not found, create it
@@ -83,15 +162,16 @@ class TaskQueueManager:
         # Find QueueItem that references this task_uuid
         # QueueItems are created as Concept nodes with task_uuid prop
         queue_item_node = None
-        for node in self.memory.nodes.values():
-            if (node.kind in ("Concept", "topic") and 
-                node.props.get("isPrototype") is not True and
-                node.props.get("task_uuid") == task_uuid):
+        for node in self._iter_nodes():
+            props = self._node_props(node)
+            if (
+                self._node_kind(node) in ("Concept", "topic")
+                and props.get("isPrototype") is not True
+                and props.get("task_uuid") == task_uuid
+            ):
                 # Check if it's linked to this queue
-                for edge in self.memory.edges.values():
-                    if (edge.from_node == queue.uuid and 
-                        edge.to_node == node.uuid and 
-                        edge.rel == "contains"):
+                for edge in self._iter_edges(from_node=queue.uuid, rel="contains"):
+                    if self._edge_to(edge) == self._node_uuid(node):
                         queue_item_node = node
                         break
                 if queue_item_node:
@@ -99,8 +179,13 @@ class TaskQueueManager:
         
         if queue_item_node:
             # Update state
-            queue_item_node.props["state"] = status
-            queue_item_node.props["updated_at"] = datetime.now(timezone.utc).isoformat()
+            props = self._node_props(queue_item_node)
+            props["state"] = status
+            props["updated_at"] = datetime.now(timezone.utc).isoformat()
+            if isinstance(queue_item_node, dict):
+                queue_item_node["props"] = props
+            else:
+                queue_item_node.props = props
             self.memory.upsert(queue_item_node, provenance)
         
         queue.props["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -115,24 +200,28 @@ class TaskQueueManager:
         
         # Find all QueueItems linked to this queue
         queue_items = []
-        for edge in self.memory.edges.values():
-            if edge.from_node == queue.uuid and edge.rel == "contains":
-                queue_item = self.memory.nodes.get(edge.to_node)
-                if queue_item:
-                    queue_items.append(queue_item)
+        for edge in self._iter_edges(from_node=queue.uuid, rel="contains"):
+            queue_item = self._get_node(self._edge_to(edge))
+            if queue_item:
+                queue_items.append(queue_item)
         
         # Update matching items
         for upd in updates:
             task_uuid = upd.get("task_uuid")
             for item in queue_items:
-                if item.props.get("task_uuid") == task_uuid:
+                props = self._node_props(item)
+                if props.get("task_uuid") == task_uuid:
                     if "priority" in upd:
-                        item.props["priority"] = upd["priority"]
+                        props["priority"] = upd["priority"]
                     if "due" in upd:
-                        item.props["due"] = upd["due"]
+                        props["due"] = upd["due"]
                     if "status" in upd:
-                        item.props["state"] = upd["status"]
-                    item.props["updated_at"] = datetime.now(timezone.utc).isoformat()
+                        props["state"] = upd["status"]
+                    props["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    if isinstance(item, dict):
+                        item["props"] = props
+                    else:
+                        item.props = props
                     self.memory.upsert(item, provenance)
         
         queue.props["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -283,11 +372,10 @@ class TaskQueueManager:
         
         # Find all QueueItems linked to this queue
         queue_items = []
-        for edge in self.memory.edges.values():
-            if edge.from_node == queue.uuid and edge.rel == "contains":
-                queue_item = self.memory.nodes.get(edge.to_node)
-                if queue_item and queue_item.props.get("state") == "queued":
-                    queue_items.append(queue_item)
+        for edge in self._iter_edges(from_node=queue.uuid, rel="contains"):
+            queue_item = self._get_node(self._edge_to(edge))
+            if queue_item and self._node_props(queue_item).get("state") == "queued":
+                queue_items.append(queue_item)
         
         if not queue_items:
             return None
@@ -301,31 +389,36 @@ class TaskQueueManager:
         queue_item = sorted_items[0]
         
         # Update state to running
-        queue_item.props["state"] = "running"
-        queue_item.props["updated_at"] = datetime.now(timezone.utc).isoformat()
+        props = self._node_props(queue_item)
+        props["state"] = "running"
+        props["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if isinstance(queue_item, dict):
+            queue_item["props"] = props
+        else:
+            queue_item.props = props
         self.memory.upsert(queue_item, provenance)
         
         # Return task reference
-        task_uuid = queue_item.props.get("task_uuid")
-        task_node = self.memory.nodes.get(task_uuid) if task_uuid else None
+        task_uuid = props.get("task_uuid")
+        task_node = self._get_node(task_uuid) if task_uuid else None
         
         return {
-            "queue_item_uuid": queue_item.uuid,
+            "queue_item_uuid": self._node_uuid(queue_item),
             "task_uuid": task_uuid,
-            "title": queue_item.props.get("label") or queue_item.props.get("name"),
-            "priority": queue_item.props.get("priority"),
-            "due": queue_item.props.get("due"),
-            "status": queue_item.props.get("state"),
-            "kind": queue_item.props.get("kind"),
-            "created_at": queue_item.props.get("enqueuedAt"),
-            "not_before": queue_item.props.get("not_before"),
+            "title": props.get("label") or props.get("name"),
+            "priority": props.get("priority"),
+            "due": props.get("due"),
+            "status": props.get("state"),
+            "kind": props.get("kind"),
+            "created_at": props.get("enqueuedAt"),
+            "not_before": props.get("not_before"),
             "task_node": task_node,
         }
 
     def _sort_queue_items(self, queue_items: List[Node]) -> List[Node]:
         """Sort QueueItem nodes by priority, not_before, due, created_at."""
         def sort_key(item: Node):
-            props = item.props
+            props = self._node_props(item)
             priority = props.get("priority") if props.get("priority") is not None else 999
             not_before = props.get("not_before") or ""
             due = props.get("due") or ""
@@ -340,26 +433,26 @@ class TaskQueueManager:
         
         # Find all QueueItems linked to this queue
         queue_items = []
-        for edge in self.memory.edges.values():
-            if edge.from_node == queue.uuid and edge.rel == "contains":
-                queue_item = self.memory.nodes.get(edge.to_node)
-                if queue_item:
-                    item_state = queue_item.props.get("state", "queued")
-                    if status is None or item_state == status:
-                        task_uuid = queue_item.props.get("task_uuid")
-                        task_node = self.memory.nodes.get(task_uuid) if task_uuid else None
-                        queue_items.append({
-                            "queue_item_uuid": queue_item.uuid,
-                            "task_uuid": task_uuid,
-                            "title": queue_item.props.get("label") or queue_item.props.get("name"),
-                            "priority": queue_item.props.get("priority"),
-                            "due": queue_item.props.get("due"),
-                            "status": item_state,
-                            "kind": queue_item.props.get("kind"),
-                            "created_at": queue_item.props.get("enqueuedAt"),
-                            "not_before": queue_item.props.get("not_before"),
-                            "task_node": task_node,
-                        })
+        for edge in self._iter_edges(from_node=queue.uuid, rel="contains"):
+            queue_item = self._get_node(self._edge_to(edge))
+            if queue_item:
+                props = self._node_props(queue_item)
+                item_state = props.get("state", "queued")
+                if status is None or item_state == status:
+                    task_uuid = props.get("task_uuid")
+                    task_node = self._get_node(task_uuid) if task_uuid else None
+                    queue_items.append({
+                        "queue_item_uuid": self._node_uuid(queue_item),
+                        "task_uuid": task_uuid,
+                        "title": props.get("label") or props.get("name"),
+                        "priority": props.get("priority"),
+                        "due": props.get("due"),
+                        "status": item_state,
+                        "kind": props.get("kind"),
+                        "created_at": props.get("enqueuedAt"),
+                        "not_before": props.get("not_before"),
+                        "task_node": task_node,
+                    })
         
         # Sort by priority
         return sorted(queue_items, key=lambda x: (

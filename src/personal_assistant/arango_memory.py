@@ -136,6 +136,56 @@ class ArangoMemoryTools(MemoryTools):
             return {"status": "success", "uuid": item.uuid}
         return {"status": "error", "error": "unknown item type"}
 
+    def get_node(self, uuid: str) -> Optional[Dict[str, Any]]:
+        try:
+            return self.nodes.get(uuid)
+        except Exception:
+            return None
+
+    def get_edge(self, uuid: str) -> Optional[Dict[str, Any]]:
+        try:
+            return self.edges.get(uuid)
+        except Exception:
+            return None
+
+    def iter_nodes(self, filters: Optional[Dict[str, Any]] = None):
+        cursor = self.nodes.all()
+        for doc in cursor:
+            if filters:
+                skip = False
+                for k, v in filters.items():
+                    if doc.get(k) != v:
+                        skip = True
+                        break
+                if skip:
+                    continue
+            yield doc
+
+    def iter_edges(self, rel: Optional[str] = None, from_node: Optional[str] = None, to_node: Optional[str] = None):
+        cursor = self.edges.all()
+        for edge in cursor:
+            if rel and edge.get("rel") != rel:
+                continue
+            if from_node:
+                if "/" in from_node:
+                    if edge.get("_from") != from_node:
+                        continue
+                elif not edge.get("_from", "").endswith(from_node):
+                    continue
+            if to_node:
+                if "/" in to_node:
+                    if edge.get("_to") != to_node:
+                        continue
+                elif not edge.get("_to", "").endswith(to_node):
+                    continue
+            yield edge
+
+    def get_edges(self, from_node: Optional[str] = None, rel: Optional[str] = None) -> List[Dict[str, Any]]:
+        edges = []
+        for edge in self.iter_edges(rel=rel, from_node=from_node):
+            edges.append(edge)
+        return edges
+
     def _resolve_verify(self, verify: Optional[Union[str, bool]]) -> Union[str, bool]:
         """
         Resolve TLS verification value for ArangoClient.
