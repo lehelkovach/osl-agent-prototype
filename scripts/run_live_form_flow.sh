@@ -29,8 +29,8 @@ echo "1) Remember credentials"
 post_msg "Remember my login for example.com: username ada, password hunter2."
 echo ""
 
-echo "2) Store a login procedure with DAG steps"
-post_msg "Create a procedure using the JSON schema: name 'Example Login', description 'Login to example.com'. Steps: step_1 web.get_dom url https://example.com/login; step_2 form.autofill url https://example.com/login form_type login depends_on step_1; step_3 web.click_selector url https://example.com/login selector #submit depends_on step_2. Use procedure.create."
+echo "2) Store a login procedure with graph schema"
+post_msg "Create a graph-based procedure (schema_version ksg-procedure-0.2). name 'Example Login', description 'Login to example.com'. nodes: n1 operation web.get_dom url https://example.com/login; n2 operation form.autofill url https://example.com/login form_type login depends_on n1; n3 operation web.click_selector url https://example.com/login selector #submit depends_on n2. edges: n1->n2 depends_on, n2->n3 depends_on. Use procedure.create."
 echo ""
 
 echo "3) Execute the stored procedure by queueing each step"

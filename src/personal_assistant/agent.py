@@ -984,6 +984,10 @@ class PersonalAssistantAgent:
                         res = {"status": "success", "tasks": self.cpms.list_tasks(**params)}
                 elif tool_name == "procedure.create":
                     # Check if params match the new JSON schema format (has "id" in steps)
+                    is_graph_schema = isinstance(params.get("nodes"), list) and len(params.get("nodes") or []) > 0
+                    if not is_graph_schema:
+                        schema_version = str(params.get("schema_version") or "")
+                        is_graph_schema = schema_version.startswith("ksg-procedure")
                     is_new_schema = (
                         "steps" in params
                         and isinstance(params.get("steps"), list)
@@ -991,6 +995,7 @@ class PersonalAssistantAgent:
                         and isinstance((params.get("steps") or [None])[0], dict)
                         and "id" in (params.get("steps") or [{}])[0]
                     )
+                    is_new_schema = is_new_schema or is_graph_schema
 
                     if is_new_schema:
                         # Use ProcedureManager for new JSON schema format

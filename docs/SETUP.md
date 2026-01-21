@@ -106,3 +106,8 @@ The agent auto-detects available backends.
 **Import errors**: Run `poetry install` again
 
 **Test failures**: Check `.env.local` has correct values
+
+## Procedure Graph Schema
+
+For control-flow procedures (loops, conditionals, subprocedures), see:
+`docs/PROCEDURE-GRAPH-SCHEMA.md`

@@ -31,6 +31,19 @@ DEFAULT_PROTOTYPES = [
         "labels": ["prototype", "dag"],
     },
     {
+        "name": "ProcedureSchema",
+        "description": "Prototype for procedure graph schema definitions",
+        "context": "procedure schema",
+        "labels": ["prototype", "procedure_schema"],
+    },
+    {
+        "name": "ProcedureNode",
+        "description": "Prototype for procedure graph nodes (operation, conditional, loop, call)",
+        "context": "procedure graph",
+        "labels": ["prototype", "procedure_node"],
+        "base": "Procedure",
+    },
+    {
         "name": "Task",
         "description": "Prototype for tasks represented as DAG-backed procedures",
         "context": "task planning and execution",
