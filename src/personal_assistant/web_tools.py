@@ -16,6 +16,42 @@ class PlaywrightWebTools(WebTools):
         self.browser_type = browser_type
         self.headless = headless
         self.capture_dir = capture_dir or os.environ.get("AGENT_CAPTURE_DIR", "/tmp/agent-captures")
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+
+    def _get_session(self, session_id: str) -> Dict[str, Any]:
+        state = self._sessions.get(session_id)
+        if state:
+            return state
+        from playwright.sync_api import sync_playwright
+        p = sync_playwright().start()
+        browser_factory = getattr(p, self.browser_type)
+        browser = browser_factory.launch(headless=self.headless)
+        page = browser.new_page()
+        state = {"playwright": p, "browser": browser, "page": page, "last_url": None}
+        self._sessions[session_id] = state
+        return state
+
+    def _ensure_session_page(self, session_id: str, url: Optional[str]):
+        state = self._get_session(session_id)
+        page = state["page"]
+        if url and state.get("last_url") != url:
+            page.goto(url)
+            state["last_url"] = url
+        return page, state
+
+    def close_session(self, session_id: str) -> Dict[str, Any]:
+        state = self._sessions.pop(session_id, None)
+        if not state:
+            return {"status": "error", "error": "session not found"}
+        try:
+            state["browser"].close()
+        except Exception:
+            pass
+        try:
+            state["playwright"].stop()
+        except Exception:
+            pass
+        return {"status": "success", "session_id": session_id}
 
     def _with_page(self, url: str, action):
         try:
@@ -38,7 +74,13 @@ class PlaywrightWebTools(WebTools):
         except Exception:
             return None
 
-    def get(self, url: str) -> Dict[str, Any]:
+    def get(self, url: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            response = page.goto(url)
+            body = page.content()
+            state["last_url"] = page.url
+            return {"status": response.status if response else 0, "url": url, "body": body, "session_id": session_id}
         def action(page, u):
             response = page.goto(u)
             body = page.content()
@@ -46,8 +88,8 @@ class PlaywrightWebTools(WebTools):
 
         return self._with_page(url, action)
 
-    def post(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        def action(page, u):
+    def post(self, url: str, payload: Dict[str, Any], session_id: Optional[str] = None) -> Dict[str, Any]:
+        def do_post(page, u):
             page.goto("about:blank")
             body = page.evaluate(
                 """async ({url, payload}) => {
@@ -59,9 +101,15 @@ class PlaywrightWebTools(WebTools):
             )
             return {"status": body.get("status", 0), "url": u, "body": body.get("body")}
 
-        return self._with_page(url, action)
+        if session_id:
+            page, state = self._ensure_session_page(session_id, None)
+            result = do_post(page, url)
+            state["last_url"] = page.url
+            result["session_id"] = session_id
+            return result
+        return self._with_page(url, do_post)
 
-    def screenshot(self, url: str) -> Dict[str, Any]:
+    def screenshot(self, url: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             img_bytes = self._try_screenshot(page)
@@ -69,26 +117,138 @@ class PlaywrightWebTools(WebTools):
             path = self._maybe_save(u, img_bytes, suffix="screenshot.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "image_base64": img_b64, "path": path}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            img_bytes = self._try_screenshot(page)
+            img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
+            path = self._maybe_save(url, img_bytes, suffix="screenshot.png") if img_bytes else None
+            state["last_url"] = page.url
+            return {"status": 200, "url": url, "image_base64": img_b64, "path": path, "session_id": session_id}
         return self._with_page(url, action)
 
-    def get_dom(self, url: str) -> Dict[str, Any]:
+    def get_dom(self, url: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             body = page.content()
             img_bytes = self._try_screenshot(page)
             img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
             path = self._maybe_save(u, img_bytes, suffix="dom.png") if img_bytes else None
+            scroll_metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth,
+                    viewportHeight: window.innerHeight,
+                    viewportWidth: window.innerWidth
+                })"""
+            )
             return {
                 "status": response.status if response else 0,
                 "url": u,
                 "html": body,
                 "screenshot_base64": img_b64,
                 "screenshot_path": path,
+                "scroll_y": scroll_metrics.get("scrollY"),
+                "scroll_x": scroll_metrics.get("scrollX"),
+                "scroll_height": scroll_metrics.get("scrollHeight"),
+                "scroll_width": scroll_metrics.get("scrollWidth"),
+                "viewport_height": scroll_metrics.get("viewportHeight"),
+                "viewport_width": scroll_metrics.get("viewportWidth"),
             }
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            body = page.content()
+            img_bytes = self._try_screenshot(page)
+            img_b64 = base64.b64encode(img_bytes or b"0").decode("ascii")
+            path = self._maybe_save(url, img_bytes, suffix="dom.png") if img_bytes else None
+            scroll_metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth,
+                    viewportHeight: window.innerHeight,
+                    viewportWidth: window.innerWidth
+                })"""
+            )
+            state["last_url"] = page.url
+            return {
+                "status": 200,
+                "url": page.url,
+                "html": body,
+                "screenshot_base64": img_b64,
+                "screenshot_path": path,
+                "session_id": session_id,
+                "scroll_y": scroll_metrics.get("scrollY"),
+                "scroll_x": scroll_metrics.get("scrollX"),
+                "scroll_height": scroll_metrics.get("scrollHeight"),
+                "scroll_width": scroll_metrics.get("scrollWidth"),
+                "viewport_height": scroll_metrics.get("viewportHeight"),
+                "viewport_width": scroll_metrics.get("viewportWidth"),
+            }
         return self._with_page(url, action)
 
-    def locate_bounding_box(self, url: str, query: str) -> Dict[str, Any]:
+    def scroll(
+        self,
+        url: str,
+        direction: str = "down",
+        amount: int = 800,
+        session_id: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        def do_scroll(page, u):
+            page.goto(u)
+            if x is not None or y is not None:
+                target_x = x or 0
+                target_y = y or 0
+                page.evaluate("([sx, sy]) => window.scrollTo(sx, sy)", [target_x, target_y])
+            else:
+                delta = int(amount)
+                if direction.lower() == "up":
+                    delta = -abs(delta)
+                elif direction.lower() == "down":
+                    delta = abs(delta)
+                page.evaluate("([dx, dy]) => window.scrollBy(dx, dy)", [0, delta])
+            metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth
+                })"""
+            )
+            return {"status": 200, "url": u, "scroll": metrics}
+
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            if x is not None or y is not None:
+                target_x = x or 0
+                target_y = y or 0
+                page.evaluate("([sx, sy]) => window.scrollTo(sx, sy)", [target_x, target_y])
+            else:
+                delta = int(amount)
+                if direction.lower() == "up":
+                    delta = -abs(delta)
+                elif direction.lower() == "down":
+                    delta = abs(delta)
+                page.evaluate("([dx, dy]) => window.scrollBy(dx, dy)", [0, delta])
+            metrics = page.evaluate(
+                """() => ({
+                    scrollX: window.scrollX,
+                    scrollY: window.scrollY,
+                    scrollHeight: document.documentElement.scrollHeight,
+                    scrollWidth: document.documentElement.scrollWidth
+                })"""
+            )
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "scroll": metrics, "session_id": session_id}
+
+        return self._with_page(url, do_scroll)
+
+    def locate_bounding_box(self, url: str, query: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Locate element bounding box using the query as a selector or text locator.
         Attempts CSS/XPath/text lookup; returns first match bounding box.
@@ -145,9 +305,26 @@ class PlaywrightWebTools(WebTools):
                 box = {"x": 0, "y": 0, "width": 0, "height": 0}
             return {"status": response.status if response else 0, "url": u, "query": query, "bbox": box, "method": "dom"}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            locator = page.locator(query)
+            count = locator.count()
+            if count == 0:
+                locator = page.get_by_text(query)
+                count = locator.count()
+            try:
+                box = locator.first.bounding_box(timeout=500) if count > 0 else None
+            except Exception:
+                box = None
+            if count == 0:
+                return {"status": 404, "url": url, "query": query, "bbox": None, "method": "dom", "session_id": session_id}
+            if not box:
+                box = {"x": 0, "y": 0, "width": 0, "height": 0}
+            state["last_url"] = page.url
+            return {"status": 200, "url": url, "query": query, "bbox": box, "method": "dom", "session_id": session_id}
         return self._with_page(url, action)
 
-    def click_xy(self, url: str, x: int, y: int) -> Dict[str, Any]:
+    def click_xy(self, url: str, x: int, y: int, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             page.mouse.click(x, y)
@@ -155,9 +332,16 @@ class PlaywrightWebTools(WebTools):
             path = self._maybe_save(u, img_bytes, suffix="click_xy.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "clicked": [x, y], "screenshot_path": path}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            page.mouse.click(x, y)
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(url, img_bytes, suffix="click_xy.png") if img_bytes else None
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "clicked": [x, y], "screenshot_path": path, "session_id": session_id}
         return self._with_page(url, action)
 
-    def click_selector(self, url: str, selector: str) -> Dict[str, Any]:
+    def click_selector(self, url: str, selector: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             page.click(selector)
@@ -165,9 +349,16 @@ class PlaywrightWebTools(WebTools):
             path = self._maybe_save(u, img_bytes, suffix="click_selector.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "selector": selector, "screenshot_path": path}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            page.click(selector)
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(url, img_bytes, suffix="click_selector.png") if img_bytes else None
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "selector": selector, "screenshot_path": path, "session_id": session_id}
         return self._with_page(url, action)
 
-    def click_xpath(self, url: str, xpath: str) -> Dict[str, Any]:
+    def click_xpath(self, url: str, xpath: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             page.click(f"xpath={xpath}")
@@ -175,9 +366,16 @@ class PlaywrightWebTools(WebTools):
             path = self._maybe_save(u, img_bytes, suffix="click_xpath.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "xpath": xpath, "screenshot_path": path}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            page.click(f"xpath={xpath}")
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(url, img_bytes, suffix="click_xpath.png") if img_bytes else None
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "xpath": xpath, "screenshot_path": path, "session_id": session_id}
         return self._with_page(url, action)
 
-    def fill(self, url: str, selector: str, text: str) -> Dict[str, Any]:
+    def fill(self, url: str, selector: str, text: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             page.fill(selector, text)
@@ -185,9 +383,16 @@ class PlaywrightWebTools(WebTools):
             path = self._maybe_save(u, img_bytes, suffix="fill.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "selector": selector, "text": text, "screenshot_path": path}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            page.fill(selector, text)
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(url, img_bytes, suffix="fill.png") if img_bytes else None
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "selector": selector, "text": text, "screenshot_path": path, "session_id": session_id}
         return self._with_page(url, action)
 
-    def wait_for(self, url: str, selector: str, timeout_ms: int = 5000) -> Dict[str, Any]:
+    def wait_for(self, url: str, selector: str, timeout_ms: int = 5000, session_id: Optional[str] = None) -> Dict[str, Any]:
         def action(page, u):
             response = page.goto(u)
             page.wait_for_selector(selector, timeout=timeout_ms)
@@ -195,6 +400,13 @@ class PlaywrightWebTools(WebTools):
             path = self._maybe_save(u, img_bytes, suffix="wait_for.png") if img_bytes else None
             return {"status": response.status if response else 0, "url": u, "selector": selector, "screenshot_path": path}
 
+        if session_id:
+            page, state = self._ensure_session_page(session_id, url)
+            page.wait_for_selector(selector, timeout=timeout_ms)
+            img_bytes = self._try_screenshot(page)
+            path = self._maybe_save(url, img_bytes, suffix="wait_for.png") if img_bytes else None
+            state["last_url"] = page.url
+            return {"status": 200, "url": page.url, "selector": selector, "screenshot_path": path, "session_id": session_id}
         return self._with_page(url, action)
 
     def _maybe_save(self, url: str, img_bytes: bytes, suffix: str) -> Optional[str]:

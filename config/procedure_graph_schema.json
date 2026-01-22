@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osl-agent-prototype/schemas/procedure-graph.json",
+  "title": "KSG Procedure Graph",
+  "type": "object",
+  "required": ["name", "description", "nodes"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "Schema version identifier"
+    },
+    "schema_uuid": {
+      "type": "string",
+      "description": "KnowShowGo UUID for the stored schema"
+    },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "goal": { "type": "string" },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "subprocedures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/subprocedure" }
+    },
+    "metadata": { "type": "object" }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "type"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["operation", "procedure_call", "conditional", "loop", "return", "noop"]
+        },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "tool": { "type": "string" },
+        "params": { "type": "object" },
+        "condition": { "type": "string" },
+        "procedure": { "type": "string" },
+        "procedure_ref": { "type": "string" },
+        "body": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "max_iterations": { "type": "integer" },
+        "metadata": { "type": "object" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "rel"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "rel": {
+          "type": "string",
+          "description": "Control-flow or dependency relationship",
+          "enum": [
+            "depends_on",
+            "branch_true",
+            "branch_false",
+            "loop_back",
+            "calls",
+            "returns",
+            "on_error",
+            "on_success"
+          ]
+        },
+        "metadata": { "type": "object" }
+      }
+    },
+    "subprocedure": {
+      "type": "object",
+      "required": ["name", "description", "nodes"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "goal": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/node" }
+        },
+        "edges": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/edge" }
+        },
+        "metadata": { "type": "object" }
+      }
+    }
+  }
+}

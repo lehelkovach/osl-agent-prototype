@@ -59,6 +59,29 @@ poetry run python -m src.personal_assistant.service
 # → http://localhost:8000/ui
 ```
 
+### Debug daemon + live flow smoke test
+```bash
+# Start the agent with log capture
+./scripts/debug_daemon.sh start
+
+# Run a live form flow (requires real LLM + Playwright for full fidelity)
+chmod +x ./scripts/run_live_form_flow.sh
+./scripts/run_live_form_flow.sh
+
+# Run a live multi-step survey flow
+chmod +x ./scripts/run_live_survey_flow.sh
+SURVEY_URL="https://your-survey-url" ./scripts/run_live_survey_flow.sh
+
+# Or run a YAML-defined flow
+python3 ./scripts/run_live_flow.py --config scripts/live_survey_flow.yaml
+```
+
+This flow:
+1) Stores credentials
+2) Creates a login procedure (DAG schema)
+3) Executes via `dag.execute` to queue each step
+4) Asks the agent to recite the stored steps
+
 ### Tests
 ```bash
 # All tests
@@ -90,3 +113,14 @@ The agent auto-detects available backends.
 **Import errors**: Run `poetry install` again
 
 **Test failures**: Check `.env.local` has correct values
+
+## Procedure Graph Schema
+
+For control-flow procedures (loops, conditionals, subprocedures), see:
+`docs/PROCEDURE-GRAPH-SCHEMA.md`
+
+## Multi-step survey flow (sessioned web tools)
+
+The `survey.fill_multi_step` tool uses an optional `session_id` to keep browser
+state across pages. When using Playwright, provide a fixed `session_id` for the
+entire flow and call `web.close_session` once finished.

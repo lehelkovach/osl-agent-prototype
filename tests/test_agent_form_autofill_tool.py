@@ -74,6 +74,42 @@ class TestAgentFormAutofillTool(unittest.TestCase):
         res = agent.execute_request("fill form")
         self.assertEqual(res["execution_results"]["steps"][0]["status"], "error")
 
+    def test_autofill_missing_fields_prompts_user(self):
+        memory = MockMemoryTools()
+        plan = """
+        {
+          "intent": "inform",
+          "steps": [
+            {
+              "tool": "form.autofill",
+              "params": {
+                "url": "https://example.com/login",
+                "selectors": {
+                  "username": "#user",
+                  "password": "#pass"
+                },
+                "required_fields": ["username", "password"],
+                "form_type": "login"
+              }
+            }
+          ]
+        }
+        """
+        agent = PersonalAssistantAgent(
+            memory,
+            MockCalendarTools(),
+            MockTaskTools(),
+            web=MockWebTools(),
+            contacts=MockContactsTools(),
+            openai_client=FakeOpenAIClient(chat_response=plan, embedding=[0.2, 0.1]),
+        )
+
+        res = agent.execute_request("fill login form")
+        step = res["execution_results"]["steps"][0]
+        self.assertEqual(step["status"], "ask_user")
+        self.assertIn("username", step.get("prompt", "").lower())
+        self.assertIn("password", step.get("prompt", "").lower())
+
 
 if __name__ == "__main__":
     unittest.main()

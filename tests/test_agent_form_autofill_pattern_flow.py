@@ -33,6 +33,27 @@ class _CpmsClientReturnsLogin:
         }
 
 
+class _CpmsClientReturnsUpdatedLogin:
+    def detect_form(self, html, screenshot_path=None, screenshot=None, url=None, dom_snapshot=None, observation=None):
+        return {
+            "form_type": "login",
+            "fields": [
+                {"type": "username", "selector": "#user-new", "confidence": 0.9},
+                {"type": "password", "selector": "#pass-new", "confidence": 0.9},
+                {"type": "submit", "selector": "#submit", "confidence": 0.8},
+            ],
+            "confidence": 0.92,
+            "pattern_id": "p-2",
+        }
+
+
+class _WebToolsFailsOnStoredSelectors(MockWebTools):
+    def fill(self, url: str, selector: str = "", text: str = "", selectors=None, values=None, **kwargs):
+        if selector in ("#user", "#pass"):
+            raise RuntimeError("selector not found")
+        return super().fill(url=url, selector=selector, text=text, selectors=selectors, values=values, **kwargs)
+
+
 class TestAutofillPatternFlow(unittest.TestCase):
     def test_autofill_reuses_stored_pattern_without_cpms(self):
         memory = MockMemoryTools()
@@ -160,6 +181,76 @@ class TestAutofillPatternFlow(unittest.TestCase):
 
         fills = [h for h in web.history if h.get("method") == "FILL"]
         self.assertEqual(len(fills), 2)
+
+    def test_autofill_adapts_when_selectors_fail(self):
+        memory = MockMemoryTools()
+        prov = Provenance("user", "2026-01-01T00:00:00Z", 1.0, "t")
+        web = _WebToolsFailsOnStoredSelectors()
+        url = "https://example.com/login"
+
+        # Store dataset values in memory.
+        form_node = Node(kind="Credential", labels=["vault"], props={"username": "ada", "password": "hunter2"})
+        memory.upsert(form_node, prov)
+
+        # Pre-store a CPMS pattern with selectors that will fail.
+        html = web.get_dom(url)["html"]
+        fp = compute_form_fingerprint(url=url, html=html).to_dict()
+        pattern_concept = Node(
+            kind="Concept",
+            labels=["Pattern", "example.com:login"],
+            props={
+                "name": "example.com:login",
+                "source": "cpms",
+                "pattern_data": {
+                    "form_type": "login",
+                    "fields": [
+                        {"type": "username", "selector": "#user", "confidence": 0.9},
+                        {"type": "password", "selector": "#pass", "confidence": 0.9},
+                    ],
+                    "confidence": 0.9,
+                    "fingerprint": fp,
+                },
+            },
+        )
+        memory.upsert(pattern_concept, prov, embedding_request=False)
+
+        plan = """
+        {
+          "intent": "inform",
+          "steps": [
+            {
+              "tool": "form.autofill",
+              "params": {
+                "url": "%s",
+                "form_type": "login",
+                "reuse_min_score": 2.0
+              }
+            }
+          ]
+        }
+        """ % url
+
+        agent = PersonalAssistantAgent(
+            memory,
+            MockCalendarTools(),
+            MockTaskTools(),
+            web=web,
+            contacts=MockContactsTools(),
+            cpms=CPMSAdapter(_CpmsClientReturnsUpdatedLogin()),
+            use_cpms_for_forms=True,
+            openai_client=FakeOpenAIClient(chat_response=plan, embedding=[0.2, 0.1]),
+        )
+
+        res = agent.execute_request("autofill login")
+        step = res["execution_results"]["steps"][0]
+        self.assertTrue(step.get("adapted"))
+        self.assertIsNotNone(step.get("adapted_pattern_uuid"))
+        self.assertEqual(step.get("missing_fields"), [])
+
+        fills = [h for h in web.history if h.get("method") == "FILL"]
+        selectors = {f["selector"] for f in fills}
+        self.assertIn("#user-new", selectors)
+        self.assertIn("#pass-new", selectors)
 
 
 if __name__ == "__main__":

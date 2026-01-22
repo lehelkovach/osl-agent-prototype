@@ -115,6 +115,24 @@ class WebTools(ABC):
         """Wait for selector to appear."""
         pass
 
+    @abstractmethod
+    def scroll(
+        self,
+        url: str,
+        direction: str = "down",
+        amount: int = 800,
+        session_id: Optional[str] = None,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Scroll the page by amount or to position."""
+        pass
+
+    @abstractmethod
+    def close_session(self, session_id: str) -> Dict[str, Any]:
+        """Close a persistent browser session (if supported)."""
+        pass
+
 
 class ShellTools(ABC):
     """Interface for running shell commands (in sandbox or dry-run)."""
